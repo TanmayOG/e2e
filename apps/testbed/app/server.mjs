@@ -12,6 +12,26 @@ import { playwrightRoutes } from './playwright/routes.mjs';
 
 const PORT = Number(process.env.PORT ?? 4271);
 const playwright = playwrightRoutes(PORT);
+/** The message board every visitor shares: one user posts, any other sees it (the peers tests). */
+const messages = [];
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+}
+
+/** The board as `author` sees it: who they are, every message so far, and a form to post one. */
+function messagesBody(author) {
+  const items = messages.map((message) => `<li>${escapeHtml(message.author)}: ${escapeHtml(message.text)}</li>`).join('\n      ');
+  return `<h1>Messages</h1>
+  <p>Signed in as <output aria-label="Signed in as">${author}</output></p>
+  <ul aria-label="Messages">
+      ${items}
+  </ul>
+  <form method="post" action="/messages">
+    <label>Message <input name="text" /></label>
+    <button type="submit">Post</button>
+  </form>`;
+}
 
 function parseCookies(request) {
   const header = request.headers.cookie ?? '';
@@ -62,6 +82,19 @@ const server = createServer(async (request, response) => {
     } else {
       html(render('/login', { failed: true }));
     }
+    return;
+  }
+  if (url.pathname === '/messages') {
+    const author = parseCookies(request).session === 'admin' ? 'admin' : 'guest';
+    if (request.method === 'POST') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      const text = new URLSearchParams(body).get('text')?.trim();
+      if (text) messages.push({ author, text });
+      send(303, { location: '/messages' });
+      return;
+    }
+    html(layout('Messages', messagesBody(author)));
     return;
   }
   if (url.pathname === '/logout') {

@@ -671,6 +671,19 @@ test('misspelled', { peers: { ava: { sesion: 'ava' } } }, async () => {});
 test('as each', { peers: { ava: { agent: ['ava', 'bob'] } } }, async () => {});
 // @ts-expect-error a setup test saves sessions and declares no peers
 test.setup('sign in', { sessions: ['ava'], peers: { ava: {} } }, async () => {});
+// Each peer has the test user's fixtures over its own app, and its engine's own.
+test('sees the payment', { peers: { ava: {} } }, async ({ peers }) => {
+  const ava = peers.ava;
+  // @ts-expect-error the test declares no peer bob
+  void peers.bob;
+  await ava.app.open('/');
+  await ava.screen.getByText('$13.00').tap();
+  const platform: string = ava.platform;
+  const contributed: unknown = ava['browser'];
+  void [platform, contributed];
+  // @ts-expect-error a peer has no peers of its own
+  void ava.peers.bob;
+});
 declare const condition: boolean;
 // @ts-expect-error a conditionally async describe is still asynchronous
 test.describe('conditionally asynchronous', () => condition ? undefined : Promise.resolve());

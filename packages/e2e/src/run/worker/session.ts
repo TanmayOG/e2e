@@ -60,6 +60,8 @@ export interface TargetWorkerDeps {
   readonly inMemory?: InMemoryAttempts | undefined;
   /** Whether steps wait for the runner's `step-release` (`e2e run --step`). */
   readonly step?: boolean | undefined;
+  /** See `TargetExecutorOptions.loadPeerConfig`; only a child-process worker, which loaded a config file, has it. */
+  readonly loadPeerConfig?: (() => Promise<ResolvedConfig>) | undefined;
 }
 
 /** Transport callbacks a target worker needs. */
@@ -123,6 +125,7 @@ export class TargetWorker {
         ...(deps.step === true ? { holdStep: (step: HeldStep, signal: AbortSignal) => this.holdStep(step, signal) } : {}),
         ...(deps.debug !== undefined ? { debug: deps.debug } : {}),
         inMemory: deps.inMemory,
+        loadPeerConfig: deps.loadPeerConfig,
         events: {
           onResult: (result) => {
             // Teardown after the result (an afterAll) belongs to no pair.

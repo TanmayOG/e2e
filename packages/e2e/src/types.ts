@@ -715,6 +715,22 @@ export interface TestFixtures {
   readonly screen: Screen;
   /** The target's platform label: `web`, `ios`, `android`, or an engine's own string. */
   readonly platform: string;
+  /** The test's peers by name (the `peers` option), each over an app of its own; empty when it declares none. */
+  readonly peers: Readonly<Record<string, PeerFixtures>>;
+}
+
+/** `Fixtures` with `peers` narrowed to the names a test declares; unchanged when it declares none. */
+export type WithPeers<Fixtures, Peers> = [Peers] extends [never]
+  ? Fixtures
+  : Omit<Fixtures, 'peers'> & { readonly peers: { readonly [Name in keyof Peers]: PeerFixtures } };
+
+/**
+ * One peer's fixtures: what the test's own user has, over the peer's app, and
+ * the fixtures the peer target's engine contributes (`browser` on a web
+ * target, `device` on a phone).
+ */
+export interface PeerFixtures extends Omit<TestFixtures, 'peers'> {
+  readonly [fixture: string]: unknown;
 }
 
 export interface SetupFixtures extends TestFixtures {
@@ -858,8 +874,16 @@ export interface TestCase {
 export interface TestAPI<Fixtures = TestFixtures> {
   /** Registers one test synchronously during module evaluation. */
   (title: string, fn: TestFn<Fixtures>): TestCase;
-  /** Registers one configured test synchronously during module evaluation. */
-  (title: string, options: TestOptions, fn: TestFn<Fixtures>): TestCase;
+  /**
+   * Registers one configured test synchronously during module evaluation.
+   * The names the test's own `peers` option declares type its `peers`
+   * fixture, so a peer it never declared is a type error.
+   */
+  <Peers extends Readonly<Record<string, PeerOptions>> = never>(
+    title: string,
+    options: TestOptions & { peers?: Peers },
+    fn: TestFn<WithPeers<Fixtures, Peers>>,
+  ): TestCase;
   /** Registers one skipped test. */
   skip(title: string, fn: TestFn<Fixtures>): TestCase;
   /**

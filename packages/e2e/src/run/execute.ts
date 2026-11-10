@@ -1,5 +1,6 @@
 /** Test-target execution engine. */
 
+import { mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { EngineDisposeContext, EngineSnapshot, ResolveSecretOptions } from '../engine/index.ts';
@@ -31,15 +32,15 @@ import { Deadline, NEVER_ABORTS, withAbort, withScopedBudget, withTimeout } from
 import { createAgentCacheContext, settleStagedTraces } from '../cache/context.ts';
 import { storedRecordingsFor, type StoredRecordings } from '../cache/rekeyed.ts';
 import type { ModuleRegistration, RegisteredTest } from '../collect/registry.ts';
-import { pairRecordings, type TestTargetPair } from '../collect/select.ts';
+import { pairRecordings, peerTarget, type TestTargetPair } from '../collect/select.ts';
 import { keeps, type AttemptRecordings, type VideoRecording } from '../internal/recording-modes.ts';
-import type { ArtifactStore, Secret } from '../types.ts';
+import type { ArtifactStore, PeerFixtures, Secret } from '../types.ts';
 import { attemptSegments, createAttemptArtifacts, resultSegment } from './artifacts.ts';
 import { AttemptBudget } from './budget.ts';
 import { createEngineSession } from '../engine/session.ts';
 import { createExtendedFixtures } from './extended-fixtures.ts';
 import { captureFailureEvidence } from './failure-evidence.ts';
-import { createFixtures, type ArtifactSink } from './fixtures.ts';
+import { createFixtures, type ArtifactSink, type AttemptEnvironment } from './fixtures.ts';
 import { WrittenScreenshots } from './screenshots.ts';
 import { publishAttempt } from '../expect/attempt.ts';
 import { PollScope, runInPollScope } from '../expect/poll-scope.ts';
@@ -58,7 +59,7 @@ import { traceScreen } from './step-screens.ts';
 import { runWithRetries } from './retry.ts';
 import { runSerialUnit, type SerialAttemptStart, type SerialHost, type SharedSerialSession } from './serial.ts';
 import { interruptedInPhase, interruptedSkip, pairKey, pairResult, unstartedResult } from './units.ts';
-import { adoptSecrets, carriedSecrets, processSecrets, registerDerivedSecrets, redactForSession, resolveSecretValue, sessionLedger, staticSecretLedger } from './secrecy.ts';
+import { adoptSecrets, carriedSecrets, processSecrets, registerDerivedSecrets, redactForSession, resolveSecretValue, sessionLedger, shareSessionLedger, staticSecretLedger } from './secrecy.ts';
 import { isSecret } from '../secrets.ts';
 import { SessionStaging, SessionStore, targetIdentity, type SessionIdentity } from './sessions.ts';
 import { StepRecorder, type StepHoldRequest, type StepProgress } from './steps.ts';
@@ -141,6 +142,43 @@ export interface TargetExecutorOptions {
   readonly events?: ExecutionEvents;
   /** The virtual file of tests registered in memory, and the agents they run as; see `InMemoryAttempts`. */
   readonly inMemory?: InMemoryAttempts | undefined;
+  /**
+   * Loads the config afresh in this process, for the engines a test's peers
+   * run on: every load evaluates the config and the project files it imports
+   * again, so its engines are its own. Undefined where the run loaded no
+   * config file (a config value, tests registered in memory), so a test
+   * there cannot have peers.
+   */
+  readonly loadPeerConfig?: (() => Promise<ResolvedConfig>) | undefined;
+}
+
+/** One peer's app in an attempt: the executor whose engine runs it, its session, and its own artifact folder. */
+interface OpenPeer {
+  readonly name: string;
+  readonly executor: TargetExecutor;
+  readonly session: TargetSession;
+  readonly sink: ArtifactSink;
+}
+
+/** What a peer's fixtures are built from in the test's attempt; the peer's executor adds its own config, target, engine, and models. */
+export type PeerAttemptEnvironment = Omit<AttemptEnvironment, 'config' | 'target' | 'models' | 'debug' | 'test' | 'peers' | 'saveSession' | 'cache'> & {
+  readonly test: { readonly file: string; readonly titlePath: readonly string[] };
+};
+
+/**
+ * A peer's artifact folder, `peers/<name>/` inside the attempt's: what its
+ * engine writes there is registered on the attempt under that path, so two
+ * users never write the same file.
+ */
+function peerArtifactSink(sink: ArtifactSink, name: string): ArtifactSink {
+  const relative = path.posix.join('peers', name);
+  const dir = path.join(sink.dir, 'peers', name);
+  mkdirSync(dir, { recursive: true });
+  return {
+    dir,
+    register: (kind, relativePath, registration) => sink.register(kind, path.posix.join(relative, relativePath), registration),
+    link: (url, registration) => sink.link(url, registration),
+  };
 }
 
 /**
@@ -174,6 +212,8 @@ export interface ClosingRecord {
 export interface SessionPlan {
   readonly session: string | undefined;
   readonly recordings: AttemptRecordings;
+  /** The session whose secret ledger this one shares: the test's own, for a peer's. */
+  readonly ledgerOwner?: TargetSession | undefined;
 }
 
 /** What closing an attempt's session needs besides its verdict: the video it started. */
@@ -204,6 +244,8 @@ export class TargetExecutor implements SerialHost {
   readonly debug: DebugTrace;
 
   private readonly runErrors: RunError[] = [];
+  /** The executors of this worker's peer engines, by target and position among an attempt's peers on it. */
+  private readonly peerExecutors = new Map<string, Promise<TargetExecutor>>();
   /** Fails the attempt in flight from outside it, while one is; see `strayRejection`. */
   private strayFailure: ((cause: unknown) => void) | undefined;
   /** The last test whose attempt ended here: the likely source of a rejection that surfaces between attempts. */
@@ -373,6 +415,13 @@ export class TargetExecutor implements SerialHost {
    * connection, so the engine has nothing of it to release.
    */
   async dispose(options: Pick<EngineDisposeContext, 'reuseSignal'> = {}): Promise<void> {
+    for (const pending of this.peerExecutors.values()) {
+      const peer = await pending.catch(() => undefined);
+      if (peer === undefined) continue;
+      await peer.dispose(options);
+      this.runErrors.push(...peer.collectedRunErrors());
+    }
+    this.peerExecutors.clear();
     const disposeEngine = this.target.engine?.dispose?.bind(this.target.engine);
     if (disposeEngine === undefined) return;
     try {
@@ -386,6 +435,109 @@ export class TargetExecutor implements SerialHost {
     } catch (cause) {
       this.runErrors.push({ error: serializeError(classifyError(cause), { phase: 'cleanup' }) });
     }
+  }
+
+  /**
+   * The executor whose engine runs the `index`th peer on `targetName` in this
+   * worker's attempts: built from a fresh load of the config the first time
+   * and reused after, since a worker runs one attempt at a time. A load that
+   * failed fails every later attempt that needs it the same way, as an
+   * engine's failed boot does.
+   */
+  private peerExecutor(pair: TestTargetPair, targetName: string, index: number): Promise<TargetExecutor> {
+    const key = `${targetName}\u0000${String(index)}`;
+    const existing = this.peerExecutors.get(key);
+    if (existing !== undefined) return existing;
+    const pending = this.loadPeerExecutor(pair, targetName);
+    this.peerExecutors.set(key, pending);
+    return pending;
+  }
+
+  private async loadPeerExecutor(pair: TestTargetPair, targetName: string): Promise<TargetExecutor> {
+    const named = `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file}`;
+    const load = this.options.loadPeerConfig;
+    if (load === undefined) {
+      throw new ConfigurationError(
+        'UNSUPPORTED_CAPABILITY',
+        `${named} declares peers, which need a run from a config file: a run given a config value, or of tests registered in memory, has no file to load a second engine from`,
+      );
+    }
+    const config = await load();
+    // The load matched the runner's config digest, so it declares every target selection checked.
+    const target = config.targets.find((candidate) => candidate.name === targetName)!;
+    // An engine made inside a package is one object every load of the config
+    // shares; it drives one attempt at a time, so it cannot serve two users.
+    if (target.engine !== undefined && target.engine === this.target.engine) {
+      throw new ConfigurationError(
+        'INVALID_CONFIG',
+        `${named} runs a peer on target "${targetName}", whose engine is the same instance in every load of the config, so it cannot run next to another user; create the engine in the config file or a project file it imports, not inside a package`,
+      );
+    }
+    return new TargetExecutor({
+      config,
+      target,
+      runId: this.options.runId,
+      artifactsRoot: this.artifactsRoot,
+      rerunDir: this.rerunDir,
+      sessionStore: this.options.sessionStore,
+      headed: this.options.headed,
+      workerSlot: this.options.workerSlot,
+      env: this.options.env,
+      isolated: this.options.isolated,
+      interruptSignal: this.interruptSignal,
+      debug: this.debug,
+      events: { onNotice: (message) => this.options.events?.onNotice?.(message) },
+    });
+  }
+
+  /**
+   * Opens each peer's app for one attempt, in declaration order, each on an
+   * engine of its own, sharing the test's secret ledger. Every peer that
+   * opened lands in `opened` before the next opens, so the caller closes it
+   * whatever fails after.
+   */
+  private async launchPeers(
+    pair: TestTargetPair,
+    owner: TargetSession,
+    attempt: { readonly id: string; readonly sink: ArtifactSink; readonly recordings: AttemptRecordings; readonly signal: AbortSignal },
+    opened: OpenPeer[],
+  ): Promise<void> {
+    const onTarget = new Map<string, number>();
+    for (const peer of pair.options.peers) {
+      const targetName = peerTarget(peer, pair);
+      const index = onTarget.get(targetName) ?? 0;
+      onTarget.set(targetName, index + 1);
+      const executor = await this.peerExecutor(pair, targetName, index);
+      const sink = peerArtifactSink(attempt.sink, peer.name);
+      const session = await executor.launchSession(
+        { session: peer.session, recordings: attempt.recordings, ledgerOwner: owner },
+        attempt.id,
+        sink.dir,
+        attempt.signal,
+      );
+      opened.push({ name: peer.name, executor, session, sink });
+    }
+  }
+
+  /**
+   * One peer's fixtures in another executor's attempt: on that attempt's
+   * steps, budget, and secret ledger, over this executor's config, target,
+   * engine, and models, so the peer's agents and their tools see the peer's
+   * app and no other.
+   */
+  peerFixtures(environment: PeerAttemptEnvironment): PeerFixtures {
+    const { fixtures } = createFixtures({
+      ...environment,
+      config: this.config,
+      target: this.target,
+      models: this.models,
+      debug: this.debug,
+      saveSession: undefined,
+      test: { ...environment.test, writtenScreenshots: this.writtenScreenshots },
+    });
+    // The graph is a peer's whole: its engine's own fixtures are reached by name.
+    const peer: Omit<typeof fixtures, 'peers' | 'session'> = fixtures;
+    return peer;
   }
 
   /**
@@ -626,6 +778,7 @@ export class TargetExecutor implements SerialHost {
     }
     const { video } = plan.recordings;
     const session = createEngineSession({ engine, targetName: this.target.name, traced: plan.recordings.trace !== undefined });
+    if (plan.ledgerOwner !== undefined) shareSessionLedger(session, plan.ledgerOwner, this.config.allSecrets);
     const launch = <T>(label: string, run: (launchSignal: AbortSignal) => Promise<T>) =>
       this.lifecycle(label, this.config.launchTimeout, 'LAUNCH_TIMEOUT', signal, run);
     const launchOp = (launchSignal: AbortSignal) =>
@@ -724,6 +877,11 @@ export class TargetExecutor implements SerialHost {
       NEVER_ABORTS,
       (signal) => session.close(this.op(attemptId, this.config.cleanupTimeout, signal)),
     );
+  }
+
+  /** Closes one peer's app on its own executor. */
+  private async closePeer(open: OpenPeer, close: SessionClose, record: ClosingRecord, secondaryErrors: SerializedError[]): Promise<void> {
+    await open.executor.closeSession(open.session, close, record, open.sink, secondaryErrors);
   }
 
   /**
@@ -864,6 +1022,8 @@ export class TargetExecutor implements SerialHost {
     const shared = context.kind === 'serial' ? context.shared : undefined;
     const onProgress = this.options.events?.onProgress;
     let openSession: TargetSession | null = null;
+    // Each peer's app, as it opens; closed before the test's own, on every path.
+    const openPeers: OpenPeer[] = [];
     // Secret values the session has seen never enter an error record or a
     // step label; the ledger is live, so a value resolved mid-attempt is
     // covered too. Before a session opens, the static values still are.
@@ -999,6 +1159,20 @@ export class TargetExecutor implements SerialHost {
         interrupt: this.interruptSignal,
       }).catch(() => undefined);
       if (evidence !== undefined) record.failure = evidence;
+      // The failure may be on any user's app, so each peer's screen is kept
+      // too, in its own folder; the attempt's failure record stays the test's.
+      for (const open of openPeers) {
+        await captureFailureEvidence({
+          session: open.session,
+          error: failure,
+          ledger: sessionLedger(open.session, this.config.allSecrets),
+          config: this.config,
+          appOrigin: open.executor.target.app.base?.origin,
+          artifacts: open.sink,
+          operation: (signal, timeoutMs) => this.op(attemptId, timeoutMs, signal),
+          interrupt: this.interruptSignal,
+        }).catch(() => undefined);
+      }
     };
     const inMemory = this.options.inMemory?.file === pair.test.file ? this.options.inMemory : undefined;
     const cache =
@@ -1045,6 +1219,13 @@ export class TargetExecutor implements SerialHost {
           }),
         ),
       );
+      // Each peer opens its own app before the deadline starts, as the test's
+      // own app does, on an engine of its own.
+      await this.launchPeers(pair, session, { id: attemptId, sink: artifacts.sink, recordings, signal: attemptAbort.signal }, openPeers);
+      const settleUsers = async (): Promise<void> => {
+        await this.settleAttempt(session, attemptId);
+        for (const open of openPeers) await open.executor.settleAttempt(open.session, attemptId);
+      };
 
       const testDeadline = new Deadline(pair.options.timeout);
       this.options.events?.onAttemptDeadline?.(pair, { index: attemptIndex, id: attemptId, startedAt });
@@ -1083,6 +1264,26 @@ export class TargetExecutor implements SerialHost {
                 carriedSecrets(sessionLedger(session, this.config.allSecrets), this.config.allSecrets),
               );
             };
+      // A peer runs as its own agent, with its own context and executor memory.
+      const peerFixtures = Object.fromEntries(
+        openPeers.map((open) => {
+          const declared = pair.options.peers.find((peer) => peer.name === open.name)!;
+          const fixturesOfPeer = open.executor.peerFixtures({
+            session: open.session,
+            steps,
+            budget,
+            runId: this.options.runId,
+            attemptId,
+            attempt: { ...attempt, memory: new Map<string, unknown>() },
+            artifacts: open.sink,
+            priorSteps,
+            agentContext: declared.agentContext,
+            agent: declared.agent ?? pair.agent,
+            test: { file: pair.test.file, titlePath: pair.test.titlePath },
+          });
+          return [open.name, fixturesOfPeer];
+        }),
+      );
       const { fixtures } = createFixtures({
         config: inMemory?.agents === undefined ? this.config : { ...this.config, agents: inMemory.agents },
         target: this.target,
@@ -1101,6 +1302,7 @@ export class TargetExecutor implements SerialHost {
         debug: this.debug,
         models: this.models,
         test: { file: pair.test.file, titlePath: pair.test.titlePath, writtenScreenshots: this.writtenScreenshots },
+        peers: peerFixtures,
       });
       // `expect.poll` and `expect.soft` take no fixture, so the attempt they
       // run on is published here and cleared when `attemptEnd` fires in `finally`.
@@ -1259,7 +1461,7 @@ export class TargetExecutor implements SerialHost {
       // next attempt's surprise. Evidence is taken now, before a teardown
       // navigates away from the page the callback saw.
       try {
-        await this.settleAttempt(session, attemptId);
+        await settleUsers();
       } catch (cause) {
         recordFailure(cause, 'body');
         await captureEvidence();
@@ -1288,7 +1490,7 @@ export class TargetExecutor implements SerialHost {
           recordFailure(cause, 'afterEach');
         }
       }
-      await this.settleAttempt(session, attemptId).catch((cause: unknown) => recordFailure(cause, 'afterEach'));
+      await settleUsers().catch((cause: unknown) => recordFailure(cause, 'afterEach'));
     } catch (cause) {
       recordFailure(cause, phase);
     } finally {
@@ -1318,6 +1520,10 @@ export class TargetExecutor implements SerialHost {
         serialize: (error) => serializeError(error, { phase: 'body', projectRoot: this.config.projectRoot, redact }),
         redact,
       });
+      // Peers close first, each with the verdict the test reached.
+      for (const open of openPeers) {
+        await this.closePeer(open, { attemptId, video }, record, secondaryErrors);
+      }
       // A serial member's recording ends with the member, not the group.
       if (openSession !== null && shared !== undefined) {
         await this.stopRunningRecording(openSession, attemptId, record, artifacts.sink, secondaryErrors);

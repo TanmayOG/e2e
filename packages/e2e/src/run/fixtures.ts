@@ -31,7 +31,7 @@ import {
 } from '../locator/screen.ts';
 import { engineAppInfo } from '../config/app.ts';
 import type { ResolvedAgentConfig, ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
-import type { Agent, App, CommandConfig, Expectable, RecordingOptions, SetupSession, TestFixtures } from '../types.ts';
+import type { Agent, App, CommandConfig, Expectable, PeerFixtures, RecordingOptions, SetupSession, TestFixtures } from '../types.ts';
 import type { StepRecord, StepRecorder } from './steps.ts';
 
 export interface ArtifactSink {
@@ -85,6 +85,8 @@ export interface AttemptEnvironment {
    * test (`e2e mcp`).
    */
   readonly test?: { readonly file: string; readonly titlePath: readonly string[]; readonly writtenScreenshots: WrittenScreenshots };
+  /** The fixtures of each peer the test declares, by name, already over their own apps; absent for a peer's own graph. */
+  readonly peers?: Readonly<Record<string, PeerFixtures>>;
 }
 
 /** Builds the lazy fixture graph for one attempt. */
@@ -261,6 +263,7 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     app,
     screen,
     platform: environment.target.platform,
+    peers: peersFixture(environment.peers ?? {}),
     session: {
       save: async (name: string) => {
         const saveSession = environment.saveSession;
@@ -282,6 +285,27 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
   );
 
   return { fixtures: gateUnknownFixtures(fixtures, environment), agentRuntime };
+}
+
+/**
+ * The test's peers by name. Reaching for a name the test does not declare
+ * fails at that touch, naming the ones it does, instead of a TypeError on
+ * `undefined` a line later.
+ */
+function peersFixture(declared: Readonly<Record<string, PeerFixtures>>): Readonly<Record<string, PeerFixtures>> {
+  const peers = Object.freeze({ ...declared });
+  return new Proxy(peers, {
+    get(target, property, receiver) {
+      if (typeof property !== 'string' || property in target || PROBED_KEYS.has(property)) {
+        return Reflect.get(target, property, receiver) as unknown;
+      }
+      const names = Object.keys(target);
+      throw new ConfigurationError(
+        'INVALID_CONFIG',
+        `the test declares no peer "${property}"; ${names.length === 0 ? 'it declares no peers, which the peers option adds' : `it declares ${names.map((name) => `"${name}"`).join(', ')}`}${didYouMean(property, names)}`,
+      );
+    },
+  });
 }
 
 /** Keys a test body may probe without meaning a fixture. */

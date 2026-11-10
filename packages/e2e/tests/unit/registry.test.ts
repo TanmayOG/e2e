@@ -452,7 +452,7 @@ describe('test.extend', () => {
   });
 
   it('rejects core fixture names and names an earlier extend already defined', () => {
-    for (const name of ['agent', 'app', 'screen', 'platform', 'session']) {
+    for (const name of ['agent', 'app', 'screen', 'platform', 'session', 'peers']) {
       expect(() => test.extend({ [name]: fixture } as never)).toThrow(
         new RegExp(`"${name}" is a core fixture`),
       );

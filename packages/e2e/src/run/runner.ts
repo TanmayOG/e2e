@@ -1389,17 +1389,20 @@ function toListedPair(projectRoot: string, pair: TestTargetPair): ListedPair {
 }
 
 /**
- * Peers are collected, selected, and scheduled, but this build does not open
- * their apps yet: a run that needs one is refused before anything starts, so
- * a declared peer is never silently left out. Removed once peers run.
+ * A peer runs on the test's own target in this build; one on another target
+ * is collected and scheduled but not opened yet, so a run that needs one is
+ * refused before anything starts instead of silently leaving it out.
  */
 function refuseUnbuiltPeers(selection: Selection): void {
-  const pair = selection.pairs.find((each) => each.disposition === 'run' && each.options.peers.length > 0);
-  if (pair === undefined) return;
-  throw new ConfigurationError(
-    'UNSUPPORTED_CAPABILITY',
-    `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file} declares peers, which this build collects but cannot run yet`,
-  );
+  for (const pair of selection.pairs) {
+    if (pair.disposition !== 'run') continue;
+    const elsewhere = pair.options.peers.find((peer) => peerTarget(peer, pair) !== pair.target.name);
+    if (elsewhere === undefined) continue;
+    throw new ConfigurationError(
+      'UNSUPPORTED_CAPABILITY',
+      `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file} runs peer "${elsewhere.name}" on target "${peerTarget(elsewhere, pair)}"; this build runs a peer on the test's own target only`,
+    );
+  }
 }
 
 /**
