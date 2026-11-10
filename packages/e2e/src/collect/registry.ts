@@ -402,12 +402,21 @@ function validatePeersOption(peers: unknown, label: string): void {
       `${label}: peers must map peer names to their options, e.g. peers: { ava: { session: 'ava' } }, got ${describeValue(peers)}`,
     );
   }
+  // A peer's files go in a folder named after it, so a name must be one folder of its own.
+  const folded = new Map<string, string>();
   for (const [name, peer] of Object.entries(peers)) {
-    if (!SESSION_NAME_PATTERN.test(name)) {
+    if (!SESSION_NAME_PATTERN.test(name) || name === '.' || name === '..') {
       throw new CollectionError(
-        `${label}: invalid peer name ${JSON.stringify(name)}: names are 1 through 128 ASCII letters, numbers, "_", "-", or "."`,
+        `${label}: invalid peer name ${JSON.stringify(name)}: names are 1 through 128 ASCII letters, numbers, "_", "-", or ".", and not "." or ".."`,
       );
     }
+    const same = folded.get(name.toLowerCase());
+    if (same !== undefined) {
+      throw new CollectionError(
+        `${label}: peer names ${JSON.stringify(same)} and ${JSON.stringify(name)} differ only in case; each peer's files go in a folder named after it, which a case-insensitive disk would share`,
+      );
+    }
+    folded.set(name.toLowerCase(), name);
     const where = `${label}: peer "${name}"`;
     if (typeof peer !== 'object' || peer === null || Array.isArray(peer)) {
       throw new CollectionError(`${where} must be an object of target, session, agent, and agentContext, got ${describeValue(peer)}`);

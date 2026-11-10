@@ -5,13 +5,23 @@
  * a peer's engine, and the lifecycle cases on the fake engine.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createFakeEngine, FAKE_APP } from '../helpers/fake-engine.ts';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
-import { listProject, resultByTitle, runProject, runProjectWithConfigFile, workerConfigSource, type RunOutcome } from '../helpers/run-project.ts';
+import type { HeldStep } from '../../src/run/step-hold.ts';
+import { assertValidReport } from '../helpers/report-schema.ts';
+import {
+  listProject,
+  resultByTitle,
+  runExistingWithConfigFile,
+  runProject,
+  runProjectWithConfigFile,
+  workerConfigSource,
+  type RunOutcome,
+} from '../helpers/run-project.ts';
 
 /** A web-like target and a second one a peer can run on, each with a fake engine that saves state. */
 const TARGETS = [
@@ -315,6 +325,453 @@ test('shares a token', { peers: { ava: {} } }, async ({ app, screen, peers }) =>
       const { result, why } = onlyAttempt(outcome, 'shares a token');
       expect(result.status, why).toBe('passed');
       expect(readFileSync(path.join(project.dir, '.e2e', 'report.json'), 'utf8')).not.toContain(TOKEN);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("labels each peer's steps, files, and app log lines in the report, keeps each user's environment apart, and adds no field for a test with no peers", async () => {
+    const { outcome, project } = await run({
+      'tests/solo.e2e.ts': `import { test, expect } from 'e2e';
+test('solo', { video: 'on' }, async ({ app, screen }) => {
+  await app.open('/nowhere-for-me');
+  await app.open('/about');
+  await expect(screen.getByRole('heading', 'Nowhere')).toBeVisible({ timeout: 500 });
+});
+`,
+      'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('labelled', { peers: { ava: {} } }, async ({ app, screen, peers }) => {
+  await app.open('/storage');
+  await expect(screen.getByRole('heading', 'Storage')).toBeVisible();
+  await peers.ava.app.open('/about');
+  await expect(peers.ava.screen.getByRole('heading', 'About')).toBeVisible();
+  await peers.ava.app.open('/nowhere-for-ava');
+  await expect(screen.getByRole('heading', 'Storage')).toBeVisible();
+  await peers.ava.app.screenshot('board');
+  await app.screenshot('board');
+});
+`,
+    });
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'labelled');
+      expect(result.status, why).toBe('passed');
+      const document = JSON.parse(readFileSync(path.join(project.dir, '.e2e', 'report.json'), 'utf8')) as unknown;
+      assertValidReport(document);
+      // The written report carries what the records do.
+      const results = (document as { run: { results: { titlePath: string[]; attempts: Record<string, unknown>[] }[] } }).run.results;
+      const pairAttempt = results.find((each) => each.titlePath.includes('labelled'))!.attempts[0]! as {
+        steps: { user?: string }[];
+        peers?: Record<string, { environment?: Record<string, string> }>;
+      };
+      expect(pairAttempt.steps.map((step) => step.user ?? null)).toEqual([null, null, 'ava', 'ava', 'ava', null, 'ava', null]);
+      expect(pairAttempt.peers?.['ava']?.environment?.['browser']).toMatch(/chromium/u);
+      const steps = attempt.steps.map((step) => [step.api, step.user ?? null]);
+      expect(steps).toEqual([
+        ['app.open', null],
+        ['expect.toBeVisible', null],
+        ['app.open', 'ava'],
+        ['expect.toBeVisible', 'ava'],
+        ['app.open', 'ava'],
+        ['expect.toBeVisible', null],
+        ['app.screenshot', 'ava'],
+        ['app.screenshot', null],
+      ]);
+      const logged = (attempt.appLog ?? []).filter((line) => line.text.includes('/nowhere-for-ava'));
+      expect(logged.length, JSON.stringify(attempt.appLog)).toBeGreaterThan(0);
+      for (const line of logged) expect(line).toMatchObject({ user: 'ava', step: 4 });
+      const shots = attempt.artifacts.filter((artifact) => artifact.kind === 'screenshot').map((artifact) => [artifact.path, artifact.user ?? null]);
+      expect(shots).toHaveLength(2);
+      expect(shots.find(([, user]) => user === 'ava')?.[0]).toMatch(/\/peers\/ava\/screenshots\/[^/]*board[^/]*\.png$/u);
+      expect(shots.find(([, user]) => user === null)?.[0]).not.toContain('/peers/');
+      expect(attempt.peers?.['ava']?.environment?.['browser']).toBe(attempt.environment?.['browser']);
+      expect(attempt.peers?.['ava']?.environment?.['browser']).toMatch(/chromium/u);
+
+      // A test with no peers has everything a peer would label, and no field names a user.
+      const solo = onlyAttempt(outcome, 'solo');
+      expect(solo.result.status, solo.why).toBe('failed');
+      expect(solo.attempt.appLog?.length).toBeGreaterThan(0);
+      expect(solo.attempt.failure).toBeDefined();
+      expect(solo.attempt.artifacts.some((artifact) => artifact.kind === 'video')).toBe(true);
+      const keys: string[] = [];
+      const walk = (value: unknown): void => {
+        if (Array.isArray(value)) value.forEach(walk);
+        else if (typeof value === 'object' && value !== null) {
+          for (const [key, inner] of Object.entries(value)) {
+            keys.push(key);
+            walk(inner);
+          }
+        }
+      };
+      const written = (document as { run: { results: { titlePath: string[] }[] } }).run.results.find((each) => each.titlePath.includes('solo'));
+      expect(written).toBeDefined();
+      walk(written);
+      expect(keys).not.toContain('user');
+      expect(keys).not.toContain('peers');
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("keeps the failing peer's own screen as its failure evidence, under its name", async () => {
+    const { outcome, project } = await run({
+      'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('peer fails', { peers: { ava: {} } }, async ({ app, peers }) => {
+  await app.open('/storage');
+  await peers.ava.app.open('/about');
+  await expect(peers.ava.screen.getByRole('heading', 'Nowhere')).toBeVisible({ timeout: 500 });
+});
+`,
+    });
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'peer fails');
+      expect(result.status, why).toBe('failed');
+      expect(attempt.steps.at(-1)).toMatchObject({ api: 'expect.toBeVisible', user: 'ava', status: 'failed' });
+      const hers = attempt.peers?.['ava']?.failure;
+      expect(hers?.url, JSON.stringify(attempt.peers)).toMatch(/\/about$/u);
+      expect(attempt.failure?.url).toMatch(/\/storage$/u);
+      const screen = attempt.artifacts.find((artifact) => artifact.id === hers?.screen);
+      expect(screen).toMatchObject({ user: 'ava' });
+      expect(screen?.path).toMatch(/\/peers\/ava\/screen-at-failure\.txt$/u);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("keeps each user's toHaveScreenshot baseline of one name in a file of its own", async () => {
+    const { outcome, project } = await run({
+      'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('baselines', { peers: { ava: {} } }, async ({ app, screen, peers }) => {
+  await app.open('/storage');
+  await peers.ava.app.open('/about');
+  await expect.soft(screen).toHaveScreenshot('page');
+  await expect.soft(peers.ava.screen).toHaveScreenshot('page');
+});
+`,
+    });
+    try {
+      // The first run has no stored screenshots: each user's is written to its own file.
+      const first = onlyAttempt(outcome, 'baselines');
+      expect(first.result.status, first.why).toBe('failed');
+      const snapshots = path.join(project.dir, 'tests', 'pair.e2e.ts-snapshots');
+      const suffix = `-web-${process.platform}.png`;
+      const mine = path.join(snapshots, `page${suffix}`);
+      const hers = path.join(snapshots, 'peers', 'ava', `page${suffix}`);
+      expect(existsSync(mine)).toBe(true);
+      expect(existsSync(hers)).toBe(true);
+      expect(readFileSync(hers).equals(readFileSync(mine))).toBe(false);
+      // Each user's screen then matches its own.
+      const second = onlyAttempt(await runExistingWithConfigFile(project, { appUrl: app.url }), 'baselines');
+      expect(second.result.status, second.why).toBe('passed');
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it('holds each user step under e2e run --step, the peer named, including two called together', async () => {
+    const held: HeldStep[] = [];
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('stepped', { peers: { ava: {} } }, async ({ app, peers }) => {
+  await app.open('/storage');
+  await peers.ava.app.open('/about');
+  await Promise.all([app.open('/todos'), peers.ava.app.open('/storage')]);
+});
+`,
+      },
+      {
+        appUrl: app.url,
+        configSource: workerConfigSource(1),
+        runOptions: {
+          beforeStep: async (step) => {
+            held.push(step);
+          },
+        },
+      },
+    );
+    try {
+      const { result, why } = onlyAttempt(outcome, 'stepped');
+      expect(result.status, why).toBe('passed');
+      expect(held.map((step) => [step.label, step.user ?? null]).toSorted()).toEqual(
+        [
+          ['/storage', null],
+          ['/about', 'ava'],
+          ['/todos', null],
+          ['/storage', 'ava'],
+        ].toSorted(),
+      );
+      expect(held.slice(0, 2).map((step) => step.user ?? null)).toEqual([null, 'ava']);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  /** A config whose one agent reads the screen, then reports, as its step summary, the earlier steps its prompt was given. */
+  const ledgerConfig = `import type { E2EConfig, StepExecutor } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+const ledger: StepExecutor = {
+  name: 'ledger',
+  version: '1',
+  cache: 'off',
+  async runStep(ctx) {
+    const seen = await ctx.observe({ pixels: true });
+    if (seen.pixels !== undefined) await ctx.attachScreenshot(seen.pixels, 'look');
+    return { status: 'passed', summary: ctx.ledger };
+  },
+};
+
+export default {
+  targets: [{ name: 'web', engine: web(), app: { url: process.env.APP_URL! } }],
+  workers: 1,
+  agents: { default: { executor: ledger } },
+} satisfies E2EConfig;
+`;
+
+  it("tells each user's agent only that user's earlier steps, and compares each user's screens with that user's own", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+import { writeFileSync } from 'node:fs';
+test('histories', { peers: { ava: {} } }, async ({ app, agent, peers }) => {
+  await app.open('/storage');
+  await peers.ava.app.open('/about');
+  await agent.act('note the storage page');
+  await peers.ava.agent.act('note the about page');
+  const mine = (await agent.act('tell what came before')).summary;
+  const hers = (await peers.ava.agent.act('tell what came before')).summary;
+  writeFileSync(new URL('../ledgers.json', import.meta.url), JSON.stringify({ mine, hers }));
+});
+`,
+      },
+      { appUrl: app.url, configSource: ledgerConfig },
+    );
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'histories');
+      expect(result.status, why).toBe('passed');
+      // Each agent step saw its own user's screen; a later one compares with that user's earlier one, not the other user's.
+      const acts = attempt.steps.filter((step) => step.api === 'agent.act');
+      expect(acts.map((step) => [step.user ?? null, step.screen?.location])).toEqual([
+        [null, `${app.url}/storage`],
+        ['ava', `${app.url}/about`],
+        [null, `${app.url}/storage`],
+        ['ava', `${app.url}/about`],
+      ]);
+      const opens = attempt.steps.filter((step) => step.api === 'app.open');
+      expect(acts.map((step) => step.screen?.since)).toEqual([opens[0]!.index, opens[1]!.index, acts[0]!.index, acts[1]!.index]);
+      for (const step of acts) expect(step.screen?.changes).toEqual([]);
+      // A tool's screenshot of one label is a file in each user's own folder.
+      const looks = attempt.artifacts.filter((artifact) => artifact.kind === 'screenshot' && (artifact.path ?? '').endsWith('/look.png'));
+      expect(looks.map((artifact) => artifact.user ?? null).toSorted(), JSON.stringify(attempt.artifacts)).toEqual(['ava', 'ava', null, null].toSorted());
+      expect(new Set(looks.filter((artifact) => artifact.user === 'ava').map((artifact) => artifact.path)).size).toBe(1);
+      expect(looks.filter((artifact) => artifact.user === 'ava').every((artifact) => artifact.path?.includes('/peers/ava/'))).toBe(true);
+      expect(looks.filter((artifact) => artifact.user === undefined).every((artifact) => !artifact.path?.includes('/peers/'))).toBe(true);
+      const { mine, hers } = JSON.parse(readFileSync(path.join(project.dir, 'ledgers.json'), 'utf8')) as { mine: string; hers: string };
+      expect(mine).toContain('note the storage page');
+      expect(mine).toContain('/storage');
+      expect(mine).not.toContain('note the about page');
+      expect(mine).not.toContain('/about');
+      expect(hers).toContain('note the about page');
+      expect(hers).toContain('/about');
+      expect(hers).not.toContain('note the storage page');
+      expect(hers).not.toContain('/storage');
+    } finally {
+      project.cleanup();
+    }
+  });
+});
+
+describe('peers: the replay cache', () => {
+  let app: FixtureApp;
+  beforeAll(async () => {
+    app = await startFixtureApp();
+  });
+  afterAll(async () => {
+    await app.close();
+  });
+
+  /** A config whose one agent taps Increment twice, through actions the replay cache records, and logs each time it runs. */
+  const counterConfig = `import type { E2EConfig, StepExecutor } from 'e2e';
+import { appendFileSync } from 'node:fs';
+import { web } from '@e2e-dev/web';
+
+const twice: StepExecutor = {
+  name: 'twice',
+  version: '1',
+  async runStep(ctx) {
+    appendFileSync(new URL('./calls.log', import.meta.url), ctx.step.instruction + '\\n');
+    const screen = await ctx.observe();
+    const line = screen.text.split('\\n').find((row) => row.includes('button "Increment"'));
+    const id = /#(\\S+)/u.exec(line ?? '')?.[1];
+    if (id === undefined) return { status: 'failed', summary: 'There is no Increment button.' };
+    await ctx.actions.tap({ id });
+    await ctx.actions.tap({ id });
+    return { status: 'passed', summary: 'Incremented the counter twice.' };
+  },
+};
+
+export default {
+  targets: [{ name: 'web', engine: web(), app: { url: process.env.APP_URL! } }],
+  workers: 1,
+  cache: { mode: 'read-write' },
+  agents: { default: { executor: twice } },
+} satisfies E2EConfig;
+`;
+
+  const calls = (project: { dir: string }): string[] =>
+    existsSync(path.join(project.dir, 'calls.log')) ? readFileSync(path.join(project.dir, 'calls.log'), 'utf8').trim().split('\n') : [];
+
+  it('keeps a recording for each user of one step, and each replays its own when the two run in the other order', async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+import { existsSync } from 'node:fs';
+const reversed = existsSync(new URL('../reversed', import.meta.url));
+test('both count', { peers: { ava: {} } }, async ({ app, agent, screen, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  const mine = async () => {
+    await agent.act('increment the counter twice');
+    await expect(screen.getByRole('status', 'Counter')).toHaveText('2');
+  };
+  const hers = async () => {
+    await peers.ava.agent.act('increment the counter twice');
+    await expect(peers.ava.screen.getByRole('status', 'Counter')).toHaveText('2');
+  };
+  if (reversed) {
+    await hers();
+    await mine();
+  } else {
+    await mine();
+    await hers();
+  }
+});
+`,
+      },
+      { appUrl: app.url, configSource: counterConfig },
+    );
+    try {
+      const first = onlyAttempt(outcome, 'both count');
+      expect(first.result.status, first.why).toBe('passed');
+      const acts = first.attempt.steps.filter((step) => step.api === 'agent.act');
+      expect(acts.map((step) => [step.user ?? null, step.cache?.write])).toEqual([
+        [null, 'saved'],
+        ['ava', 'saved'],
+      ]);
+      expect(acts[0]!.cache?.entry).not.toBe(acts[1]!.cache?.entry);
+      expect(calls(project)).toHaveLength(2);
+      const entries = readdirSync(path.join(project.dir, '.e2e', 'cache'), { recursive: true }).filter((file) => String(file).endsWith('.json'));
+      expect(entries).toHaveLength(2);
+
+      writeFileSync(path.join(project.dir, 'reversed'), '');
+      const second = await runExistingWithConfigFile(project, { appUrl: app.url });
+      const again = onlyAttempt(second, 'both count');
+      expect(again.result.status, again.why).toBe('passed');
+      const replayed = again.attempt.steps.filter((step) => step.api === 'agent.act');
+      expect(replayed.map((step) => [step.user ?? null, step.cache?.mode, step.cache?.entry])).toEqual([
+        ['ava', 'self-finalized', acts[1]!.cache?.entry],
+        [null, 'self-finalized', acts[0]!.cache?.entry],
+      ]);
+      // Nothing called the agent: both steps replayed.
+      expect(calls(project)).toHaveLength(2);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("runs a peer's step live under --strict-cache when only the test's own user has a recording of it", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+import { existsSync } from 'node:fs';
+const withAva = existsSync(new URL('../with-ava', import.meta.url));
+test('strict', { peers: { ava: {} } }, async ({ app, agent, screen, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  await agent.act('increment the counter twice');
+  await expect(screen.getByRole('status', 'Counter')).toHaveText('2');
+  if (!withAva) return;
+  await peers.ava.agent.act('increment the counter twice');
+  await expect(peers.ava.screen.getByRole('status', 'Counter')).toHaveText('2');
+});
+`,
+      },
+      { appUrl: app.url, configSource: counterConfig },
+    );
+    try {
+      const first = onlyAttempt(outcome, 'strict');
+      expect(first.result.status, first.why).toBe('passed');
+      writeFileSync(path.join(project.dir, 'with-ava'), '');
+      const second = await runExistingWithConfigFile(project, { appUrl: app.url, runOptions: { strictCache: true } });
+      const again = onlyAttempt(second, 'strict');
+      expect(again.result.status, again.why).toBe('passed');
+      const acts = again.attempt.steps.filter((step) => step.api === 'agent.act');
+      expect(acts.map((step) => [step.user ?? null, step.cache?.mode, step.cache?.reason ?? null])).toEqual([
+        [null, 'self-finalized', null],
+        ['ava', 'missed', 'no-entry'],
+      ]);
+      expect(calls(project)).toHaveLength(2);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("confirms, on an attempt that fails, only what each user's own checks verified before the failure", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('fails after my check', { peers: { ava: {}, bob: {} } }, async ({ app, agent, screen, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  await peers.bob.app.open('/');
+  await peers.ava.agent.act('increment the counter twice');
+  await peers.bob.agent.act('increment the counter twice');
+  await expect(peers.bob.screen.getByRole('status', 'Counter')).toHaveText('2');
+  await agent.act('increment the counter twice');
+  await expect(screen.getByRole('status', 'Counter')).toHaveText('2');
+  await expect(screen.getByRole('status', 'Counter')).toHaveText('3', { timeout: 300 });
+});
+`,
+      },
+      { appUrl: app.url, configSource: counterConfig },
+    );
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'fails after my check');
+      expect(result.status, why).toBe('failed');
+      const acts = attempt.steps.filter((step) => step.api === 'agent.act');
+      expect(acts.map((step) => [step.user ?? null, step.cache?.write])).toEqual([
+        ['ava', 'unconfirmed'],
+        ['bob', 'saved'],
+        [null, 'saved'],
+      ]);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("confirms a user's recording only by that user's own later check", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('only mine checked', { peers: { ava: {} } }, async ({ app, agent, screen, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  await peers.ava.agent.act('increment the counter twice');
+  await agent.act('increment the counter twice');
+  await expect(screen.getByRole('status', 'Counter')).toHaveText('2');
+});
+`,
+      },
+      { appUrl: app.url, configSource: counterConfig },
+    );
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'only mine checked');
+      expect(result.status, why).toBe('passed');
+      const acts = attempt.steps.filter((step) => step.api === 'agent.act');
+      expect(acts.map((step) => [step.user ?? null, step.cache?.write])).toEqual([
+        ['ava', 'unconfirmed'],
+        [null, 'saved'],
+      ]);
     } finally {
       project.cleanup();
     }

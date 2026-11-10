@@ -29,7 +29,7 @@ import { DebugTrace } from '../internal/debug.ts';
 import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import { engineAppInfo } from '../config/app.ts';
 import { Deadline, NEVER_ABORTS, withAbort, withScopedBudget, withTimeout } from '../internal/time.ts';
-import { createAgentCacheContext, settleStagedTraces } from '../cache/context.ts';
+import { createAgentCacheContext, settleStagedTraces, type AgentCacheContext } from '../cache/context.ts';
 import { storedRecordingsFor, type StoredRecordings } from '../cache/rekeyed.ts';
 import type { ModuleRegistration, RegisteredTest } from '../collect/registry.ts';
 import { pairRecordings, peerTarget, type TestTargetPair } from '../collect/select.ts';
@@ -161,8 +161,8 @@ interface OpenPeer {
 }
 
 /** What a peer's fixtures are built from in the test's attempt; the peer's executor adds its own config, target, engine, and models. */
-export type PeerAttemptEnvironment = Omit<AttemptEnvironment, 'config' | 'target' | 'models' | 'debug' | 'test' | 'peers' | 'saveSession' | 'cache'> & {
-  readonly test: { readonly file: string; readonly titlePath: readonly string[] };
+export type PeerAttemptEnvironment = Omit<AttemptEnvironment, 'config' | 'target' | 'models' | 'debug' | 'test' | 'peers' | 'saveSession'> & {
+  readonly test: { readonly file: string; readonly titlePath: readonly string[]; readonly user: string };
 };
 
 /**
@@ -176,7 +176,7 @@ function peerArtifactSink(sink: ArtifactSink, name: string): ArtifactSink {
   mkdirSync(dir, { recursive: true });
   return {
     dir,
-    register: (kind, relativePath, registration) => sink.register(kind, path.posix.join(relative, relativePath), registration),
+    register: (kind, relativePath, registration) => sink.register(kind, path.posix.join(relative, relativePath), { ...registration, user: name }),
     link: (url, registration) => sink.link(url, registration),
   };
 }
@@ -501,6 +501,7 @@ export class TargetExecutor implements SerialHost {
     owner: TargetSession,
     attempt: { readonly id: string; readonly sink: ArtifactSink; readonly recordings: AttemptRecordings; readonly signal: AbortSignal },
     opened: OpenPeer[],
+    steps: StepRecorder,
   ): Promise<void> {
     const onTarget = new Map<string, number>();
     for (const peer of pair.options.peers) {
@@ -514,6 +515,17 @@ export class TargetExecutor implements SerialHost {
         attempt.id,
         sink.dir,
         attempt.signal,
+      );
+      // What the peer's app logs, and the screens its steps saw, are the peer's.
+      session.appLog.route((event, at) => steps.recordAppEvent(event, at, peer.name));
+      session.screens.route((observation) =>
+        steps.recordScreen(() =>
+          traceScreen(observation, {
+            ledger: sessionLedger(session, this.config.allSecrets),
+            maxBytes: this.config.limits.maxObservationBytes,
+            appOrigin: executor.target.app.base?.origin,
+          }),
+        ),
       );
       opened.push({ name: peer.name, executor, session, sink });
     }
@@ -884,6 +896,20 @@ export class TargetExecutor implements SerialHost {
     await open.executor.closeSession(open.session, close, record, open.sink, secondaryErrors);
   }
 
+  /** A peer's replay cache in another executor's attempt: keyed on this executor's target and the peer's name, so no user replays another's recording. */
+  peerCache(testId: string, attemptIndex: number, user: string): AgentCacheContext | undefined {
+    return createAgentCacheContext({
+      cache: this.config.cache,
+      projectRoot: this.config.projectRoot,
+      projectId: this.config.projectId,
+      testId,
+      target: this.sessionIdentity,
+      attemptIndex,
+      recordings: this.storedRecordings,
+      user,
+    });
+  }
+
   /**
    * Finalizes the video, then ends the attempt with a fresh cleanup
    * budget. The caller has classified the attempt by now: `record.status`
@@ -1043,9 +1069,10 @@ export class TargetExecutor implements SerialHost {
     });
     // Agent prompts quote completed steps as prior context. Serial-group
     // members prepend the steps earlier members already contributed.
+    // A peer's steps are its own history: the test's user's prompt never quotes them.
     const priorSteps =
       shared === undefined
-        ? () => steps.completed()
+        ? () => steps.completed().filter((step) => step.user === undefined)
         : () => [...shared.priorSteps, ...steps.completed()];
     const secondaryErrors: SerializedError[] = [];
     const attemptAbort = new AbortController();
@@ -1119,7 +1146,7 @@ export class TargetExecutor implements SerialHost {
     // Captured the moment the primary failure lands: steps that pass later —
     // afterEach cleanup, teardown — must not confirm traces the failure
     // implicated (a cleanup assertion says nothing about the failed flow).
-    let lastVerifiedAtFailure = -1;
+    let lastVerifiedAtFailure = new Map<string | undefined, number>();
     // Whether any failure, primary or later, says something about the app:
     // one where no model answered does not, but an afterEach assertion
     // failing after it still implicates the flows nothing confirmed.
@@ -1135,7 +1162,7 @@ export class TargetExecutor implements SerialHost {
         );
         return;
       }
-      lastVerifiedAtFailure = steps.lastVerifiedStepIndex;
+      lastVerifiedAtFailure = new Map([undefined, ...openPeers.map((open) => open.name)].map((user) => [user, steps.lastVerifiedStepIndexOf(user)]));
       failure = classified;
       failurePhase = atPhase;
     };
@@ -1162,7 +1189,7 @@ export class TargetExecutor implements SerialHost {
       // The failure may be on any user's app, so each peer's screen is kept
       // too, in its own folder; the attempt's failure record stays the test's.
       for (const open of openPeers) {
-        await captureFailureEvidence({
+        const peerEvidence = await captureFailureEvidence({
           session: open.session,
           error: failure,
           ledger: sessionLedger(open.session, this.config.allSecrets),
@@ -1172,9 +1199,12 @@ export class TargetExecutor implements SerialHost {
           operation: (signal, timeoutMs) => this.op(attemptId, timeoutMs, signal),
           interrupt: this.interruptSignal,
         }).catch(() => undefined);
+        if (peerEvidence !== undefined) record.peers = { ...record.peers, [open.name]: { ...record.peers?.[open.name], failure: peerEvidence } };
       }
     };
     const inMemory = this.options.inMemory?.file === pair.test.file ? this.options.inMemory : undefined;
+    /** Each peer's replay cache, by name, settled with the test's own at the end. */
+    const peerCaches = new Map<string, AgentCacheContext>();
     const cache =
       inMemory === undefined
         ? createAgentCacheContext({
@@ -1221,7 +1251,7 @@ export class TargetExecutor implements SerialHost {
       );
       // Each peer opens its own app before the deadline starts, as the test's
       // own app does, on an engine of its own.
-      await this.launchPeers(pair, session, { id: attemptId, sink: artifacts.sink, recordings, signal: attemptAbort.signal }, openPeers);
+      await this.launchPeers(pair, session, { id: attemptId, sink: artifacts.sink, recordings, signal: attemptAbort.signal }, openPeers, steps);
       const settleUsers = async (): Promise<void> => {
         await this.settleAttempt(session, attemptId);
         for (const open of openPeers) await open.executor.settleAttempt(open.session, attemptId);
@@ -1237,7 +1267,17 @@ export class TargetExecutor implements SerialHost {
           signal: attemptAbort.signal,
           ask: (step, signal) =>
             holdStep(
-              { target: this.target.name, testId: pair.test.id, agent: pair.agent, repeat: pair.repeat, title, api: step.api, label: step.label, ...(step.source === undefined ? {} : { source: step.source }) },
+              {
+                target: this.target.name,
+                testId: pair.test.id,
+                agent: pair.agent,
+                repeat: pair.repeat,
+                title,
+                api: step.api,
+                label: step.label,
+                ...(step.source === undefined ? {} : { source: step.source }),
+                ...(step.user === undefined ? {} : { user: step.user }),
+              },
               signal,
             ),
           // The runner's watchdog keeps the test deadline too; it gets what is left.
@@ -1268,18 +1308,21 @@ export class TargetExecutor implements SerialHost {
       const peerFixtures = Object.fromEntries(
         openPeers.map((open) => {
           const declared = pair.options.peers.find((peer) => peer.name === open.name)!;
+          const peerCache = inMemory === undefined ? open.executor.peerCache(pair.test.id, attemptIndex, open.name) : undefined;
+          if (peerCache !== undefined) peerCaches.set(open.name, peerCache);
           const fixturesOfPeer = open.executor.peerFixtures({
             session: open.session,
-            steps,
+            steps: steps.forUser(open.name),
             budget,
             runId: this.options.runId,
             attemptId,
             attempt: { ...attempt, memory: new Map<string, unknown>() },
             artifacts: open.sink,
-            priorSteps,
+            priorSteps: () => steps.completed().filter((step) => step.user === open.name),
             agentContext: declared.agentContext,
             agent: declared.agent ?? pair.agent,
-            test: { file: pair.test.file, titlePath: pair.test.titlePath },
+            test: { file: pair.test.file, titlePath: pair.test.titlePath, user: open.name },
+            ...(peerCache === undefined ? {} : { cache: peerCache }),
           });
           return [open.name, fixturesOfPeer];
         }),
@@ -1523,6 +1566,8 @@ export class TargetExecutor implements SerialHost {
       // Peers close first, each with the verdict the test reached.
       for (const open of openPeers) {
         await this.closePeer(open, { attemptId, video }, record, secondaryErrors);
+        const environment = open.session.environment.read(redact);
+        if (environment !== undefined) record.peers = { ...record.peers, [open.name]: { ...record.peers?.[open.name], environment } };
       }
       // A serial member's recording ends with the member, not the group.
       if (openSession !== null && shared !== undefined) {
@@ -1560,7 +1605,23 @@ export class TargetExecutor implements SerialHost {
         record.status === 'interrupted'
           ? undefined
           : {
-              lastVerifiedStepIndex: failure === undefined ? steps.lastVerifiedStepIndex : lastVerifiedAtFailure,
+              lastVerifiedStepIndex: failure === undefined ? steps.lastVerifiedStepIndex : (lastVerifiedAtFailure.get(undefined) ?? -1),
+              implicatesUnconfirmed: failure === undefined || implicatesUnconfirmed,
+            },
+      );
+      for (const step of record.steps) {
+        const write = writes.get(step.index);
+        if (step.cache !== undefined && write !== undefined) step.cache.write = write;
+      }
+    }
+    // Each peer's recordings stand or fall on that peer's own checks.
+    for (const [user, peerCache] of peerCaches) {
+      const writes = await settleStagedTraces(
+        peerCache,
+        record.status === 'interrupted'
+          ? undefined
+          : {
+              lastVerifiedStepIndex: failure === undefined ? steps.lastVerifiedStepIndexOf(user) : (lastVerifiedAtFailure.get(user) ?? -1),
               implicatesUnconfirmed: failure === undefined || implicatesUnconfirmed,
             },
       );

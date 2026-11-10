@@ -349,5 +349,6 @@ export function recordedProvenance(provenance: TraceProvenance, redact: (text: s
     ...(provenance.paramsDigest === undefined ? {} : { paramsDigest: provenance.paramsDigest }),
     ...(provenance.callIndex === undefined ? {} : { callIndex: provenance.callIndex }),
     ...(provenance.agent === undefined ? {} : { agent: bound(redact(provenance.agent), MAX_TRACE_DESCRIPTOR_CHARS) }),
+    ...(provenance.user === undefined ? {} : { user: bound(redact(provenance.user), MAX_TRACE_DESCRIPTOR_CHARS) }),
   };
 }

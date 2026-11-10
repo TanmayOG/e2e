@@ -72,6 +72,8 @@ export interface AiTraceScope {
   readonly attempt: number;
   readonly api?: string;
   readonly label?: string;
+  /** The peer whose step made the call; absent for the test's own user. */
+  readonly user?: string;
 }
 
 const scopeStorage = new AsyncLocalStorage<AiTraceScope>();
@@ -85,10 +87,10 @@ export function withAiTraceScope<T>(scope: AiTraceScope, work: () => Promise<T>)
  * Narrows the current attempt scope to one public API step. Outside an
  * attempt scope there is nothing to narrow, and the work runs as is.
  */
-export function withAiTraceStep<T>(api: string, label: string, work: () => Promise<T>): Promise<T> {
+export function withAiTraceStep<T>(api: string, label: string, work: () => Promise<T>, user?: string): Promise<T> {
   const parent = scopeStorage.getStore();
   if (parent === undefined) return work();
-  return scopeStorage.run({ ...parent, api, label }, work);
+  return scopeStorage.run({ ...parent, api, label, ...(user === undefined ? {} : { user }) }, work);
 }
 
 /** The scope of the calling async context, when inside an attempt. */
@@ -523,6 +525,8 @@ function runName(scope: AiTraceScope | undefined, functionId: string | undefined
   // A test run as several agents is several runs; the name tells them apart.
   if (scope.agent !== 'default') parts.push(`as ${scope.agent}`);
   if (scope.attempt > 0) parts.push(`attempt ${scope.attempt + 1}`);
+  // Each user's model calls are their own runs: the name says whose step it was.
+  if (scope.user !== undefined) parts.push(`peer ${scope.user}`);
   if (scope.api !== undefined) {
     const label =
       scope.label === undefined || scope.label === '' ? '' : ` ${JSON.stringify(truncate(scope.label))}`;

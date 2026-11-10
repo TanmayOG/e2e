@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { resultId } from '../../src/internal/ids.ts';
 import { visibleWidth } from '../../src/report/format.ts';
 import { ListReporter } from '../../src/report/list.ts';
+import { stepPromptLine } from '../../src/report/list-steps.ts';
 import { userFrame } from '../../src/report/code-frame.ts';
 import type { CacheWrite } from '../../src/cache/context.ts';
 import type { RunEventFact, RunEventOf, RunEventResult } from '../../src/run/events.ts';
@@ -1284,6 +1285,59 @@ describe('ListReporter', () => {
       // The window above the result line is erased before the block prints.
       expect(chunks.some((chunk) => chunk.includes('\u001b[0J'))).toBe(true);
       expect(chunks.at(-1)).not.toContain('└──');
+    });
+
+    it("shows each user's running step under its test, and names the peer on its finished steps and at the --step prompt", () => {
+      const restore = withTerminalSize({ columns: 120, rows: 40 });
+      try {
+        const { chunks, output } = liveCapture();
+        const reporter = new ListReporter(output, { live: true, colors: false, stepping: true });
+        reporter.handle(runStarted());
+        reporter.handle(plan([{ file: 'tests/invite.e2e.ts', tests: 1 }]));
+        reporter.handle(testStarted('t1', 'invites a friend', 'chromium', 'tests/invite.e2e.ts'));
+        const step = (progress: object, user?: string) =>
+          reporter.handle({
+            type: 'step',
+            testId: 't1',
+            agent: 'default',
+            repeat: 0,
+            target: 'chromium',
+            progress: { ...progress, identity: { attemptId: 'a', attemptIndex: 0, stepId: user ?? 'own', stepIndex: 0, ...(user === undefined ? {} : { user }) } },
+          } as never);
+        const shown = () => {
+          const window = chunks.at(-1)!.replace(ANSI_PATTERN, '').split('\n').filter((line) => line.trim() !== '');
+          const row = window.findIndex((line) => line.includes('invites a friend'));
+          return window.slice(row + 1, window.findIndex((line) => line.includes('Test Files'))).map((line) => line.trim());
+        };
+        step({ phase: 'start', kind: 'agent', api: 'agent.act', label: 'pay' });
+        step({ phase: 'start', kind: 'agent', api: 'agent.act', label: 'accept' }, 'ava');
+        // What each user's step waits on shows under that step only.
+        step({ phase: 'activity', api: 'agent.act', activity: 'action' }, 'ava');
+        expect(shown().map((line) => line.replace(/^\S+ (Acting|Thinking)$/u, '$1'))).toEqual(['↳ agent.act "pay"', 'Thinking', '↳ ava · agent.act "accept"', 'Acting']);
+        step({ phase: 'replay', api: 'agent.act', active: true });
+        expect(shown().map((line) => line.replace(/^\S+ (Acting|Thinking|Replaying)$/u, '$1'))).toEqual(['↳ agent.act "pay"', 'Replaying', '↳ ava · agent.act "accept"', 'Acting']);
+        step({ phase: 'end', kind: 'agent', api: 'agent.act', label: 'pay', status: 'passed', durationMs: 40, modelCalls: 0 });
+        step({ phase: 'end', kind: 'agent', api: 'agent.act', label: 'accept', status: 'passed', durationMs: 50, modelCalls: 0 }, 'ava');
+        step({ phase: 'start', kind: 'locator', api: 'locator.click', label: 'Send invite' });
+        step({ phase: 'start', kind: 'locator', api: 'locator.click', label: 'Accept' }, 'ava');
+        expect(shown().slice(-2)).toEqual(['↳ locator.click "Send invite"', '↳ ava · locator.click "Accept"']);
+        step({ phase: 'end', kind: 'locator', api: 'locator.click', label: 'Accept', status: 'passed', durationMs: 85, modelCalls: 0 }, 'ava');
+        expect(shown().slice(-2)).toEqual(['✓ ava · locator.click "Accept" 85ms', '↳ locator.click "Send invite"']);
+        step({ phase: 'end', kind: 'locator', api: 'locator.click', label: 'Send invite', status: 'passed', durationMs: 90, modelCalls: 0 });
+        const held = { target: 'chromium', testId: 't1', agent: 'default', repeat: 0, title: 'invites a friend', api: 'locator.click', label: 'Join', user: 'ava' };
+        reporter.showStepPrompt({ steps: [{ step: held, number: 3 }], help: false });
+        expect(shown()).toEqual([
+          '✓ agent.act "pay" 40ms',
+          '✓ ava · agent.act "accept" 50ms',
+          '✓ ava · locator.click "Accept" 85ms',
+          '✓ locator.click "Send invite" 90ms',
+          '▶ step 3  ava · locator.click "Join"',
+          'press enter to run this step, press h to show help, press q to quit',
+        ]);
+        expect(stepPromptLine({ steps: [{ step: held, number: 3 }], help: false })).toContain(': ava · locator.click "Join" · press enter');
+      } finally {
+        restore();
+      }
     });
 
     it('shows the --step prompt under its paused test, after every step that ran, and takes it down', () => {

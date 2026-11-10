@@ -8,6 +8,7 @@ import {
   withAiTraceScope,
   withAiTraceStep,
 } from '../../src/internal/ai-trace.ts';
+import { StepRecorder } from '../../src/run/steps.ts';
 import { gate } from '../helpers/gate.ts';
 
 const SCOPE = { test: 'todos › adds one', testId: 't1', target: 'web', agent: 'default', attempt: 0 };
@@ -137,6 +138,31 @@ describe('AiTraceRecorder', () => {
     const names = recorder.drain().runs.map((run) => run.function_id);
     expect(names[0]).toBe('my-agent');
     expect(names[1]).toMatch(/^todos › adds one · attempt 2 · agent\.assert "a{80}…"$/);
+  });
+
+  it("names a peer's step run after the peer, and records the peer in its scope", async () => {
+    const recorder = new AiTraceRecorder();
+    await withAiTraceScope(SCOPE, async () => {
+      await withAiTraceStep('agent.act', 'send the invite', () => generation(recorder, 'mine'));
+      await withAiTraceStep('agent.act', 'accept the invite', () => generation(recorder, 'hers'), 'ava');
+    });
+    const runs = recorder.drain().runs;
+    expect(runs.map((run) => run.function_id)).toEqual([
+      'todos › adds one · agent.act "send the invite"',
+      'todos › adds one · peer ava · agent.act "accept the invite"',
+    ]);
+    expect(runs[0]!.e2e).toEqual({ ...SCOPE, api: 'agent.act', label: 'send the invite' });
+    expect(runs[1]!.e2e).toEqual({ ...SCOPE, api: 'agent.act', label: 'accept the invite', user: 'ava' });
+  });
+
+  it("attributes a peer's recorded step to the peer", async () => {
+    const recorder = new AiTraceRecorder();
+    const steps = new StepRecorder('attempt');
+    await withAiTraceScope(SCOPE, async () => {
+      await steps.run('agent', 'agent.act', 'send the invite', () => generation(recorder, 'mine'));
+      await steps.forUser('ava').run('agent', 'agent.act', 'accept the invite', () => generation(recorder, 'hers'));
+    });
+    expect(recorder.drain().runs.map((run) => run.e2e?.user)).toEqual([undefined, 'ava']);
   });
 
   it('continues one run across the generations of a single step, and starts a new run per step', async () => {

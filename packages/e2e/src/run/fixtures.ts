@@ -32,7 +32,7 @@ import {
 import { engineAppInfo } from '../config/app.ts';
 import type { ResolvedAgentConfig, ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
 import type { Agent, App, CommandConfig, Expectable, PeerFixtures, RecordingOptions, SetupSession, TestFixtures } from '../types.ts';
-import type { StepRecord, StepRecorder } from './steps.ts';
+import type { StepRecord, StepSink } from './steps.ts';
 
 export interface ArtifactSink {
   /** Absolute attempt artifact directory, for runner-written artifacts. */
@@ -51,13 +51,15 @@ export interface ArtifactSink {
 export interface ArtifactRegistration {
   /** When a time-based artifact (a video segment) began recording. */
   readonly startedAt?: string;
+  /** The peer whose app produced it, by name; absent for the test's own user. */
+  readonly user?: string;
 }
 
 export interface AttemptEnvironment {
   readonly config: ResolvedConfig;
   readonly target: ResolvedTarget;
   readonly session: TargetSession;
-  readonly steps: StepRecorder;
+  readonly steps: StepSink;
   /** The running phase's signal and deadline; read at call time, never captured. */
   readonly budget: AttemptBudget;
   readonly runId: string;
@@ -82,9 +84,15 @@ export interface AttemptEnvironment {
   /**
    * The test the attempt runs, which `toHaveScreenshot` keeps its screenshots
    * beside, and the screenshots the run wrote; absent for a session with no
-   * test (`e2e mcp`).
+   * test (`e2e mcp`). `user` names the peer a peer's graph is for, whose
+   * screenshots keep a folder of their own.
    */
-  readonly test?: { readonly file: string; readonly titlePath: readonly string[]; readonly writtenScreenshots: WrittenScreenshots };
+  readonly test?: {
+    readonly file: string;
+    readonly titlePath: readonly string[];
+    readonly writtenScreenshots: WrittenScreenshots;
+    readonly user?: string;
+  };
   /** The fixtures of each peer the test declares, by name, already over their own apps; absent for a peer's own graph. */
   readonly peers?: Readonly<Record<string, PeerFixtures>>;
 }
@@ -104,7 +112,7 @@ interface ScreenWiring {
   readonly runId: string;
   readonly attemptId: string;
   readonly config: ResolvedConfig;
-  readonly steps: StepRecorder;
+  readonly steps: StepSink;
   readonly secrets: SecretResolver;
   /** The session's secret ledger, which `screen.tree()` passes its text through. */
   readonly redaction: NodeRedaction;
@@ -176,6 +184,7 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
             titlePath: environment.test.titlePath,
             written: environment.test.writtenScreenshots,
             artifacts: environment.artifacts,
+            user: environment.test.user,
           }),
         }),
   });

@@ -23,7 +23,7 @@ import type {
   StepMetrics,
   StepModelInfo,
   StepRecord,
-  StepRecorder,
+  StepSink,
   VisionDegradation,
 } from '../run/steps.ts';
 import type { JsonValue, VisionMode } from '../types.ts';
@@ -86,7 +86,7 @@ export interface AgentContext {
    * engine says whether it produces pixels only once `observe` asks.
    */
   readonly engineCapabilities: ReadonlySet<EngineCapability>;
-  readonly steps: StepRecorder;
+  readonly steps: StepSink;
   /**
    * The agent a call runs with: the one it names, else the test's pin, else
    * the run's. An unknown name is `INVALID_ARGUMENT`.

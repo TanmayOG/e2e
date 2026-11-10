@@ -426,6 +426,8 @@ function readProvenance(document: unknown): TraceProvenance | undefined {
   }
   const agent = raw['agent'] === undefined ? undefined : readBoundedText(raw['agent'], MAX_TRACE_DESCRIPTOR_CHARS);
   if (raw['agent'] !== undefined && agent === undefined) return undefined;
+  const user = raw['user'] === undefined ? undefined : readBoundedText(raw['user'], MAX_TRACE_DESCRIPTOR_CHARS);
+  if (raw['user'] !== undefined && user === undefined) return undefined;
   return {
     testId,
     targetId,
@@ -433,6 +435,7 @@ function readProvenance(document: unknown): TraceProvenance | undefined {
     ...(paramsDigest === undefined ? {} : { paramsDigest }),
     ...(callIndex === undefined ? {} : { callIndex }),
     ...(agent === undefined ? {} : { agent }),
+    ...(user === undefined ? {} : { user }),
   };
 }
 

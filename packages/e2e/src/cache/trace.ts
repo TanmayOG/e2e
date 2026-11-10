@@ -105,6 +105,8 @@ export interface TraceProvenance {
   readonly callIndex?: number;
   /** Name of the configured agent the step ran with. */
   readonly agent?: string;
+  /** The peer the step ran as, by name; absent for the test's own user. */
+  readonly user?: string;
 }
 
 /**

@@ -95,11 +95,13 @@ export function createAttemptArtifacts(options: {
       const absolute = path.join(dir, relativePath);
       const stepId = options.currentStepId?.();
       const startedAt = registration?.startedAt;
+      const user = registration?.user;
       const record: ArtifactRecord = {
         id,
         kind,
         mediaType: mediaTypeFor(relativePath),
         ...(startedAt === undefined ? {} : { startedAt }),
+        ...(user === undefined ? {} : { user }),
         redaction: REDACTION_BY_KIND[kind],
         producer: stepId === undefined ? { kind: 'attempt' } : { kind: 'step', stepId },
       };

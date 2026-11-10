@@ -698,6 +698,7 @@ export class ListReporter implements Reporter {
       startedMs: Date.now(),
       executing: true,
       current: undefined,
+      peerSteps: new Map(),
       steps: this.pairs.get(key)?.steps ?? [],
       ran: this.stepping ? (this.pairs.get(key)?.ran ?? []) : undefined,
     });
@@ -716,15 +717,19 @@ export class ListReporter implements Reporter {
     const running = this.pairs.get(pairKey(event.testId, event.agent, event.target, event.repeat));
     if (running === undefined) return;
     const { progress } = event;
+    // A peer's step runs beside the test's own: each user has its own current step.
+    const user = progress.identity?.user;
+    const current = user === undefined ? running.current : running.peerSteps.get(user);
     switch (progress.phase) {
       case 'start': {
         const { api, label, kind } = progress;
-        running.current = { api, label, kind, events: [], replaying: false, activity: undefined };
+        const started = { api, label, kind, events: [], replaying: false, activity: undefined };
+        if (user === undefined) running.current = started;
+        else running.peerSteps.set(user, started);
         this.window.redraw();
         break;
       }
       case 'event': {
-        const { current } = running;
         this.explore?.action(progress.event);
         if (current === undefined) break;
         // The event ends whatever was announced; until the next announcement
@@ -737,28 +742,27 @@ export class ListReporter implements Reporter {
         break;
       }
       case 'activity': {
-        const { current } = running;
         if (current === undefined) break;
         current.activity = progress.activity;
         this.window.redraw();
         break;
       }
       case 'replay': {
-        const { current } = running;
         if (current === undefined) break;
         current.replaying = progress.active;
         this.window.redraw();
         break;
       }
       case 'end': {
-        running.current = undefined;
-        running.ran?.push({ api: progress.api, label: progress.label, status: progress.status, durationMs: progress.durationMs, modelCalls: progress.modelCalls });
+        if (user === undefined) running.current = undefined;
+        else running.peerSteps.delete(user);
+        const { api, label, status, durationMs, modelCalls } = progress;
+        const step = { api, label, status, durationMs, modelCalls, ...(user === undefined ? {} : { user }) };
+        running.ran?.push(step);
         if (progress.kind !== 'agent') {
           this.window.redraw();
           break;
         }
-        const { api, label, status, durationMs, modelCalls } = progress;
-        const step = { api, label, status, durationMs, modelCalls };
         // An exploration's planner and charter steps show as the exploration's own rows.
         if (this.explore !== undefined) break;
         if (this.live) {

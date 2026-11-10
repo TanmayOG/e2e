@@ -97,6 +97,16 @@ describe('traceCacheKeyHash', () => {
     expect(traceCacheKeyHash(buildTraceCacheKey(withParams))).toBe('400b6e2625b0feb2483a87adcd90ab7ddb03a83ef47ed5409e57680cbb1d0caf');
   });
 
+  it("keys a peer's step on the peer's name too, and leaves the test's own user's key as it was", () => {
+    const mine = buildTraceCacheKey(parts);
+    expect(Object.hasOwn(mine, 'user')).toBe(false);
+    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: undefined }))).toBe(traceCacheKeyHash(mine));
+    const ava = traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: 'ava' }));
+    expect(ava).not.toBe(traceCacheKeyHash(mine));
+    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: 'bob' }))).not.toBe(ava);
+    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: 'ava' }))).toBe(ava);
+  });
+
   it('keys the agent context by digest, never by its text', () => {
     const key = buildTraceCacheKey({ ...parts, agent: { name: 'buyer', context: 'Pay with <secret:card>.' } });
     expect(key.agent).toBe('buyer');

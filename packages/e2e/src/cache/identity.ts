@@ -59,6 +59,8 @@ export interface TraceCacheKey {
   /** SHA-256 of the agent's redacted context (its `context` then the test's `agentContext`), or of the empty string. */
   readonly agentContextDigest: string;
   readonly policyVersion: string;
+  /** The peer the step ran as, by name; absent for the test's own user, whose keys stay as they were. */
+  readonly user?: string;
 }
 
 /** The agent a step runs with, as the key sees it. */
@@ -170,6 +172,7 @@ export function buildTraceCacheKey(parts: {
   readonly callIndex: number;
   readonly agent: CacheAgentIdentity;
   readonly policyVersion: string;
+  readonly user?: string | undefined;
 }): TraceCacheKey {
   return {
     specVersion: '0.1',
@@ -188,6 +191,7 @@ export function buildTraceCacheKey(parts: {
     agent: parts.agent.name,
     agentContextDigest: sha256Hex(parts.agent.context ?? ''),
     policyVersion: parts.policyVersion,
+    ...(parts.user === undefined ? {} : { user: parts.user }),
   };
 }
 

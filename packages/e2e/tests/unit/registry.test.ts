@@ -368,6 +368,18 @@ describe('peers', () => {
     await expect(register(() => test('x', { peers: { ['x'.repeat(128)]: {} } }, noop))).resolves.toBeDefined();
   });
 
+  it("rejects a peer name that could not be a folder of the peer's own: a dot, two dots, or another peer's name in other case", async () => {
+    for (const name of ['.', '..']) {
+      await expect(register(() => test('x', { peers: { [name]: {} } }, noop))).rejects.toThrow(
+        `test options: invalid peer name ${JSON.stringify(name)}: names are 1 through 128 ASCII letters, numbers, "_", "-", or ".", and not "." or ".."`,
+      );
+    }
+    await expect(register(() => test('x', { peers: { Ava: {}, ava: {} } }, noop))).rejects.toThrow(
+      'test options: peer names "Ava" and "ava" differ only in case; each peer\'s files go in a folder named after it, which a case-insensitive disk would share',
+    );
+    await expect(register(() => test('x', { peers: { '.ava': {}, 'ava.': {}, '...': {}, ava: {}, bob: {} } }, noop))).resolves.toBeDefined();
+  });
+
   it('rejects an unknown peer key, naming the nearest, and fields that are not non-empty strings', async () => {
     await expect(register(() => test('x', { peers: { ava: { sesion: 'ava' } } } as never, noop))).rejects.toThrow(
       'test options: peer "ava" has unknown key "sesion"; did you mean "session"?',
