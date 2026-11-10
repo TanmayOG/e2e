@@ -24,6 +24,7 @@ import {
   type KeyModifier,
   type Locator,
   type ModelInstance,
+  type PeerOptions,
   type PointDragResult,
   type PointHit,
   type PointTapResult,
@@ -660,6 +661,16 @@ test.describe('as each persona', { agent: ['buyer', 'admin'] }, () => {});
 test('as each persona', { agent: ['buyer', 'admin'] }, async () => {});
 // @ts-expect-error a setup test runs once per target, so it pins at most one agent
 test.setup('sign in', { sessions: ['buyer'], agent: ['buyer', 'admin'] }, async () => {});
+// Peers: more users in one test, by name, each with its own target, saved session, agent, and context.
+const peer: PeerOptions = { target: 'iphone', session: 'ava', agent: 'ava', agentContext: 'You are Ava.' };
+test('pays a friend', { session: 'member', peers: { ava: peer, bob: {} } }, async () => {});
+test.describe('with a friend', { peers: { ava: { session: 'ava' } } }, () => {});
+// @ts-expect-error a peer takes only target, session, agent, and agentContext
+test('misspelled', { peers: { ava: { sesion: 'ava' } } }, async () => {});
+// @ts-expect-error a peer runs as one agent, not a list
+test('as each', { peers: { ava: { agent: ['ava', 'bob'] } } }, async () => {});
+// @ts-expect-error a setup test saves sessions and declares no peers
+test.setup('sign in', { sessions: ['ava'], peers: { ava: {} } }, async () => {});
 declare const condition: boolean;
 // @ts-expect-error a conditionally async describe is still asynchronous
 test.describe('conditionally asynchronous', () => condition ? undefined : Promise.resolve());

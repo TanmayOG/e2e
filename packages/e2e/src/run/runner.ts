@@ -13,6 +13,7 @@ import {
 import { collect, collectInMemory, collectSetups, type Collection } from '../collect/collect.ts';
 import type { ModuleRegistration } from '../collect/registry.ts';
 import {
+  peerTarget,
   repeatEach,
   select,
   selectTargets,
@@ -328,6 +329,14 @@ export interface ListOptions
  * `source`, `session`, and `serialId` are present and `undefined` when the
  * test has none; `reason` is omitted unless the pair is skipped or filtered.
  */
+/** One peer of a listed pair, with its defaults filled in from the pair. */
+export interface ListedPeer {
+  readonly name: string;
+  readonly target: string;
+  readonly session: string | undefined;
+  readonly agent: string;
+}
+
 export interface ListedPair {
   readonly id: string;
   readonly file: string;
@@ -340,6 +349,8 @@ export interface ListedPair {
   readonly source: { readonly file: string; readonly line: number; readonly column: number } | undefined;
   /** The session the test consumes, from the test or its describe chain. */
   readonly session: string | undefined;
+  /** The users the test adds, each with the target it runs on and the agent it runs as; omitted when it adds none. */
+  readonly peers?: readonly ListedPeer[];
   /** Session names a setup produces; `[]` on an ordinary test. */
   readonly sessions: readonly string[];
   /** Set when the test belongs to a serial group. */
@@ -903,7 +914,9 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
           // Pass 1, what any test filter judges. The run's own flag still
           // decides an empty one, so a mistyped --tag fails before any
           // filter calls a model.
-          return { collection, filters: inputs.filters, selection: select(collection, config, inputs.filters, flags) };
+          const firstPass = select(collection, config, inputs.filters, flags);
+          refuseUnbuiltPeers(firstPass);
+          return { collection, filters: inputs.filters, selection: firstPass };
         }),
       );
     } catch (cause) {
@@ -1362,6 +1375,9 @@ function toListedPair(projectRoot: string, pair: TestTargetPair): ListedPair {
     tags: pair.test.tags,
     source: projectSource(projectRoot, pair.test.source, pair.test.file),
     session: pair.options.session,
+    ...(pair.options.peers.length === 0
+      ? {}
+      : { peers: pair.options.peers.map((peer) => ({ name: peer.name, target: peerTarget(peer, pair), session: peer.session, agent: peer.agent ?? pair.agent })) }),
     sessions: pair.test.sessions,
     serialId: pair.test.serialId,
     target: pair.target.name,
@@ -1370,6 +1386,20 @@ function toListedPair(projectRoot: string, pair: TestTargetPair): ListedPair {
     ...(pair.skip === undefined ? {} : { reason: pair.skip.reason }),
     ...(pair.skip?.filter === undefined ? {} : { filter: pair.skip.filter }),
   };
+}
+
+/**
+ * Peers are collected, selected, and scheduled, but this build does not open
+ * their apps yet: a run that needs one is refused before anything starts, so
+ * a declared peer is never silently left out. Removed once peers run.
+ */
+function refuseUnbuiltPeers(selection: Selection): void {
+  const pair = selection.pairs.find((each) => each.disposition === 'run' && each.options.peers.length > 0);
+  if (pair === undefined) return;
+  throw new ConfigurationError(
+    'UNSUPPORTED_CAPABILITY',
+    `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file} declares peers, which this build collects but cannot run yet`,
+  );
 }
 
 /**

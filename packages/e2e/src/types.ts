@@ -727,6 +727,27 @@ export interface SuiteFixtures {
   readonly platform: string;
 }
 
+/**
+ * One more user in a test: an app of its own, opened next to the test's,
+ * on the test's target or another one. The test reaches it as
+ * `peers.<name>`.
+ */
+export interface PeerOptions {
+  /** The target the peer's app runs on; defaults to the test's own target. */
+  target?: string;
+  /**
+   * A session a setup test saved on the peer's target, restored into the
+   * peer's app before the body runs. The peer's target must save and
+   * restore state, as for `session`; a device target cannot, so a device
+   * peer signs in during the test.
+   */
+  session?: string;
+  /** The configured agent (`agents.<name>`) the peer's `agent` runs with; defaults to the agent the test runs as. */
+  agent?: string;
+  /** Extra context for the peer's agent steps. The test's own `agentContext` stays with the test's user. */
+  agentContext?: string;
+}
+
 export interface TestOptions {
   /** Attempt deadline in milliseconds; defaults to `config.timeout`. Innermost wins. */
   timeout?: number;
@@ -750,6 +771,13 @@ export interface TestOptions {
   requires?: readonly Capability[];
   /** Session a setup test saved, restored before the body runs. */
   session?: string;
+  /**
+   * More users in the test, by name: each opens its own app before
+   * `beforeEach` runs, on the test's target or another one. Innermost wins,
+   * as a whole. Names are 1 through 128 ASCII letters, numbers, `_`, `-`,
+   * or `.`. Not allowed inside a serial group.
+   */
+  peers?: Readonly<Record<string, PeerOptions>>;
   /** Extra context for agent steps; layers are concatenated outermost first. */
   agentContext?: string;
   /**
@@ -781,7 +809,7 @@ export interface DescribeOptions extends Omit<TestOptions, 'only' | 'fail'> {
   serial?: boolean;
 }
 
-export interface SetupOptions extends Omit<TestOptions, 'session' | 'only' | 'skip' | 'fail' | 'agent'> {
+export interface SetupOptions extends Omit<TestOptions, 'session' | 'peers' | 'only' | 'skip' | 'fail' | 'agent'> {
   /** Session names this setup test MUST save. */
   sessions: readonly string[];
   /** A setup test runs once per target, so it pins at most one agent. */
@@ -1654,6 +1682,8 @@ export interface TestFilterCandidate {
   readonly tags: readonly string[];
   /** Project-relative POSIX path of the setup test file that saves the test's session; absent when the test uses none. */
   readonly setupFile?: string;
+  /** Project-relative POSIX paths of the setup test files that save its peers' sessions, each once, in peer order; absent when no peer restores one. */
+  readonly peerSetupFiles?: readonly string[];
 }
 
 /** What a run's test filters judge: every file that differs from the base commit. */

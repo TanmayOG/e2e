@@ -8,7 +8,7 @@
  * execution.
  */
 
-import type { SkipInfo, TestTargetPair } from '../collect/select.ts';
+import { peerTarget, type SkipInfo, type TestTargetPair } from '../collect/select.ts';
 import type { ResolvedTarget } from '../config/resolve.ts';
 import type { AiTraceSnapshot } from '../internal/ai-trace.ts';
 import type { DebugSnapshot } from '../internal/debug.ts';
@@ -684,9 +684,26 @@ class Scheduler {
   private peekUnit(state: TargetState): WorkUnit | undefined {
     if (state.unavailable !== undefined) return undefined;
     if (state.setupQueue.length > 0) return state.setupQueue[0];
-    // Ordinary units wait until every setup for this target has finished.
+    // Ordinary units wait until every setup for this target has finished,
+    // and for the targets their peers restore a session from.
     if (this.hasPendingSetup(state)) return undefined;
-    return state.fileQueue[0];
+    const next = state.fileQueue[0];
+    if (next !== undefined && this.peerSetupTargets(next).some((target) => this.hasPendingSetup(target))) return undefined;
+    return next;
+  }
+
+  /** The targets whose setups save a session one of `unit`'s peers restores. */
+  private peerSetupTargets(unit: WorkUnit): TargetState[] {
+    const names = new Set<string>();
+    for (const pair of unit.pairs) {
+      for (const peer of pair.options.peers) {
+        if (peer.session !== undefined) names.add(peerTarget(peer, pair));
+      }
+    }
+    return [...names].flatMap((name) => {
+      const state = this.targets.get(name);
+      return state === undefined ? [] : [state];
+    });
   }
 
   /**
@@ -740,11 +757,16 @@ class Scheduler {
     state: TargetState,
     pair: TestTargetPair,
   ): ReturnType<typeof setupFailedSkip> | undefined {
-    const session = pair.options.session;
-    if (session === undefined) return undefined;
-    const failedSetup = state.failedSessions.get(session);
-    if (failedSetup === undefined) return undefined;
-    return setupFailedSkip(session, failedSetup);
+    const own = pair.options.session;
+    const failedOwn = own === undefined ? undefined : state.failedSessions.get(own);
+    if (own !== undefined && failedOwn !== undefined) return setupFailedSkip(own, failedOwn);
+    // A peer's session comes from its own target's setup, which may have failed there.
+    for (const peer of pair.options.peers) {
+      if (peer.session === undefined) continue;
+      const failedPeer = this.targets.get(peerTarget(peer, pair))?.failedSessions.get(peer.session);
+      if (failedPeer !== undefined) return setupFailedSkip(peer.session, failedPeer);
+    }
+    return undefined;
   }
 
   // --- workers ---
@@ -1194,6 +1216,9 @@ class Scheduler {
    * workers; a boot failure is recorded once before returned units skip.
    */
   private failTarget(state: TargetState, unavailable: TargetUnavailable): void {
+    // Its setups never ran, so another target's peer restoring one of their
+    // sessions skips like a dependent of a failed setup instead of failing at restore.
+    for (const unit of state.setupQueue) for (const pair of unit.pairs) this.markSessionsFailed(state, pair);
     if (state.unavailable === undefined && unavailable.kind === 'worker-start') {
       this.options.events.onRunError({
         error: serializeError(

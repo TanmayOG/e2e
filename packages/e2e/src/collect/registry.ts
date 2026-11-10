@@ -17,6 +17,7 @@ import type { SourceLocation } from '../internal/source.ts';
 import type {
   DescribeOptions,
   FixtureFn,
+  PeerOptions,
   SetupFn,
   SetupOptions,
   SuiteHookFn,
@@ -274,6 +275,7 @@ const TEST_OPTION_KEYS: readonly string[] = Object.keys({
   platforms: true,
   requires: true,
   session: true,
+  peers: true,
   agentContext: true,
   agent: true,
   trace: true,
@@ -302,6 +304,7 @@ const DESCRIBE_OPTION_KEYS: readonly string[] = Object.keys({
   platforms: true,
   requires: true,
   session: true,
+  peers: true,
   agentContext: true,
   agent: true,
   trace: true,
@@ -332,6 +335,7 @@ function validateCommonOptions(options: TestOptions | DescribeOptions, label: st
   }
   if (options.agent !== undefined) validateAgentOption(options.agent, label);
   if (options.tags !== undefined) validateTagsOption(options.tags, label);
+  if (options.peers !== undefined) validatePeersOption(options.peers, label);
   for (const kind of ['trace', 'video'] as const) {
     const mode = options[kind];
     if (mode !== undefined && !isRecordingMode(mode)) {
@@ -378,6 +382,54 @@ function isTagName(tag: unknown): tag is string {
   return typeof tag === 'string' && tag !== '' && tag.trim() === tag && !tag.includes(',');
 }
 
+/** The keys one peer takes. */
+const PEER_OPTION_KEYS: readonly string[] = Object.keys({
+  target: true,
+  session: true,
+  agent: true,
+  agentContext: true,
+} satisfies Record<keyof PeerOptions, true>);
+
+/**
+ * `peers` maps names to one peer each. Names follow the session-name rule,
+ * since they label a user in paths and reports; every field is a non-empty
+ * string, and a peer's `session` follows the session-name rule too. An
+ * empty map is allowed: an inner layer clears the peers of an outer one.
+ */
+function validatePeersOption(peers: unknown, label: string): void {
+  if (typeof peers !== 'object' || peers === null || Array.isArray(peers)) {
+    throw new CollectionError(
+      `${label}: peers must map peer names to their options, e.g. peers: { ava: { session: 'ava' } }, got ${describeValue(peers)}`,
+    );
+  }
+  for (const [name, peer] of Object.entries(peers)) {
+    if (!SESSION_NAME_PATTERN.test(name)) {
+      throw new CollectionError(
+        `${label}: invalid peer name ${JSON.stringify(name)}: names are 1 through 128 ASCII letters, numbers, "_", "-", or "."`,
+      );
+    }
+    const where = `${label}: peer "${name}"`;
+    if (typeof peer !== 'object' || peer === null || Array.isArray(peer)) {
+      throw new CollectionError(`${where} must be an object of target, session, agent, and agentContext, got ${describeValue(peer)}`);
+    }
+    const unknown = unknownKeyMessage(where, peer, PEER_OPTION_KEYS);
+    if (unknown !== undefined) throw new CollectionError(unknown);
+    for (const key of PEER_OPTION_KEYS) {
+      const value: unknown = (peer as Record<string, unknown>)[key];
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || value === '') {
+        throw new CollectionError(`${where}: ${key} must be a non-empty string, got ${describeValue(value)}`);
+      }
+    }
+    const { session } = peer as PeerOptions;
+    if (session !== undefined && !SESSION_NAME_PATTERN.test(session)) {
+      throw new CollectionError(
+        `${where}: invalid session name ${JSON.stringify(session)}: names are 1 through 128 ASCII letters, numbers, "_", "-", or "."`,
+      );
+    }
+  }
+}
+
 /** `agent` names one configured agent, or lists several distinct ones to run the test once each. */
 function validateAgentOption(agent: unknown, label: string): void {
   if (typeof agent === 'string') {
@@ -416,6 +468,7 @@ function validateTestOptions(options: TestOptions, group: GroupNode | undefined,
       'trace',
       'video',
       'session',
+      'peers',
       'platforms',
       'requires',
       'skip',
@@ -436,6 +489,10 @@ function validateDescribeOptions(options: DescribeOptions, parent: GroupNode | u
   validateCommonOptions(options, 'describe options', DESCRIBE_OPTION_KEYS);
   if (options.serial === true && insideSerial(parent)) {
     throw new CollectionError('nested serial groups are collection errors');
+  }
+  // A serial group runs as one unit on one shared app; a second user's app is not part of it yet.
+  if (options.peers !== undefined && (options.serial === true || insideSerial(parent))) {
+    throw new CollectionError('describe option "peers" cannot be set on or inside a serial group; a serial group runs on one shared app');
   }
   // The serial group records as one unit, so a describe inside it cannot choose its own recordings.
   for (const kind of ['trace', 'video'] as const) {

@@ -29,6 +29,7 @@ const defaultOptions: ResolvedTestOptions = {
   platforms: undefined,
   requires: [],
   session: undefined,
+  peers: [],
   agents: ['default'],
   agentContext: undefined,
   skipReason: undefined,
@@ -1806,5 +1807,78 @@ describe('scheduler fault handling', () => {
     expect(collected.results).toHaveLength(2);
     expect(collected.results.find((result) => result.test.id === 'skip-me')!.selected).toBe(true);
     expect(collected.results.find((result) => result.test.id === 'filter-me')!.selected).toBe(false);
+  });
+});
+
+describe('peers and setup gating', () => {
+  const peerOf = (session: string, target: string | undefined) => ({ name: 'ava', target, session, agent: undefined, agentContext: undefined });
+  const setupFor = (target: ResolvedTarget, session: string) =>
+    makePair(makeTest(`tests/${session}.setup.e2e.ts`, `save ${session}`, { kind: 'setup', sessions: [session], id: `setup::${session}` }), target);
+
+  it('starts a test only after the setup that saves its peer session on the peer target has finished, and no other', async () => {
+    const web = makeTarget('web', 0);
+    const admin = makeTarget('admin', 1);
+    const pays = makePair(makeTest('tests/pays.e2e.ts', 'pays'), web, { options: { ...defaultOptions, peers: [peerOf('ava', 'admin')] } });
+    const setup = setupFor(admin, 'ava');
+    const fleet = new FakeFleet();
+    const collected = await run(
+      makeSelection([{ target: web, pairs: [pays] }, { target: admin, pairs: [setup] }]),
+      makeCollection([pays.test.file, setup.test.file], [pays, setup]),
+      fleet,
+      { workers: 2 },
+    );
+    // The web worker is ready first and its own target has no setup, yet it waits for the admin one.
+    expect(collected.results.map((result) => result.test.id)).toEqual(['setup::ava', pays.test.id]);
+    expect(collected.results[1]!.status).toBe('passed');
+
+    // A peer that restores no session holds nothing back.
+    const chats = makePair(makeTest('tests/chats.e2e.ts', 'chats'), web, {
+      options: { ...defaultOptions, peers: [{ name: 'ava', target: 'admin', session: undefined, agent: undefined, agentContext: undefined }] },
+    });
+    const other = setupFor(admin, 'other');
+    const unheld = await run(
+      makeSelection([{ target: web, pairs: [chats] }, { target: admin, pairs: [other] }]),
+      makeCollection([chats.test.file, other.test.file], [chats, other]),
+      new FakeFleet(),
+      { workers: 2 },
+    );
+    expect(unheld.results.map((result) => result.test.id)).toEqual([chats.test.id, 'setup::other']);
+  });
+
+  it('skips a test whose peer session setup failed, on the peer target or its own', async () => {
+    const web = makeTarget('web', 0);
+    const admin = makeTarget('admin', 1);
+    const across = makePair(makeTest('tests/across.e2e.ts', 'across'), web, { options: { ...defaultOptions, peers: [peerOf('ava', 'admin')] } });
+    const local = makePair(makeTest('tests/local.e2e.ts', 'local'), web, { options: { ...defaultOptions, peers: [peerOf('bob', undefined)] } });
+    const avaSetup = setupFor(admin, 'ava');
+    const bobSetup = setupFor(web, 'bob');
+    const fleet = new FakeFleet({ status: { 'setup::ava': 'failed', 'setup::bob': 'failed' } });
+    const collected = await run(
+      makeSelection([{ target: web, pairs: [bobSetup, across, local] }, { target: admin, pairs: [avaSetup] }]),
+      makeCollection([across.test.file, local.test.file, avaSetup.test.file, bobSetup.test.file], [bobSetup, across, local, avaSetup]),
+      fleet,
+      { workers: 2 },
+    );
+    const byId = new Map(collected.results.map((result) => [result.test.id, result]));
+    expect(byId.get(across.test.id)).toMatchObject({ status: 'skipped', skip: { cause: 'setup-failed', relatedId: 'setup::ava' } });
+    expect(byId.get(local.test.id)).toMatchObject({ status: 'skipped', skip: { cause: 'setup-failed', relatedId: 'setup::bob' } });
+  });
+
+  it('skips a test whose peer target could not start a worker, instead of running it without the session', async () => {
+    const web = makeTarget('web', 0);
+    const admin = makeTarget('admin', 1);
+    const pays = makePair(makeTest('tests/pays.e2e.ts', 'pays'), web, { options: { ...defaultOptions, peers: [peerOf('ava', 'admin')] } });
+    const setup = setupFor(admin, 'ava');
+    const fleet = new FakeFleet({ failInit: ['admin'] });
+    const collected = await run(
+      makeSelection([{ target: web, pairs: [pays] }, { target: admin, pairs: [setup] }]),
+      makeCollection([pays.test.file, setup.test.file], [pays, setup]),
+      fleet,
+      { workers: 2 },
+    );
+    expect(collected.results.find((result) => result.test.id === pays.test.id)).toMatchObject({
+      status: 'skipped',
+      skip: { cause: 'setup-failed', relatedId: 'setup::ava' },
+    });
   });
 });
