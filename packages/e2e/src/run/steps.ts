@@ -8,7 +8,7 @@ import type { TraceReplayMissReason } from '../cache/decide.ts';
 import type { RecordedModel, DerivedReason } from '../cache/trace.ts';
 import { bound } from '../internal/text.ts';
 import { markAbandonedRejection, relocateStack } from '../internal/abandoned.ts';
-import { withAiTraceStep, type AiTraceUser } from '../internal/ai-trace.ts';
+import { withAiTraceStep } from '../internal/ai-trace.ts';
 import { classifyError, serializeError, TestError, withHint, type SerializedError } from '../internal/errors.ts';
 import { timestamp } from '../internal/ids.ts';
 import { withAbort } from '../internal/time.ts';
@@ -320,6 +320,16 @@ export type StepSink = Pick<
   | 'currentStepIndex'
 >;
 
+/**
+ * The agent a peer runs as and its app's target, as `forUser` takes them.
+ * Declared here, not imported from the AI trace module, whose declarations
+ * import the optional `ai` package: this one is on the public types.
+ */
+interface PeerTraceIdentity {
+  readonly agent: string;
+  readonly target: string;
+}
+
 export interface StepRecorderOptions {
   /** The report-owning attempt; serial members share their group's attempt identity. */
   readonly attempt?: { readonly id: string; readonly index: number };
@@ -441,7 +451,7 @@ export class StepRecorder {
   /** Where each user's app went before that user's first step, told under it once it starts. */
   private readonly earlyNavigations = new Map<string | undefined, { line: string; at: string }[]>();
   /** Each peer's agent and target, by name, which its steps' model calls are attributed to. */
-  private readonly users = new Map<string, Omit<AiTraceUser, 'name'>>();
+  private readonly users = new Map<string, PeerTraceIdentity>();
   private readonly maxEventsPerStep: number;
   private readonly onProgress: ((progress: StepProgress) => void) | undefined;
   private readonly projectRoot: string | undefined;
@@ -862,7 +872,7 @@ export class StepRecorder {
    * completed are the peer's alone. `as` is the agent the peer runs as and
    * its app's target, which its steps' model calls are attributed to.
    */
-  forUser(user: string, as: Omit<AiTraceUser, 'name'>): StepSink {
+  forUser(user: string, as: PeerTraceIdentity): StepSink {
     this.users.set(user, as);
     // The view's getters have the view as `this`; these read the recorder's running step.
     const runningId = (): string | undefined => this.currentStepId;

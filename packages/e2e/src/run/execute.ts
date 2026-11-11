@@ -906,7 +906,12 @@ export class TargetExecutor implements SerialHost {
     await open.executor.closeSession(open.session, close, record, open.sink, secondaryErrors);
   }
 
-  /** A peer's replay cache in another executor's attempt: keyed on this executor's target and the peer's name, so no user replays another's recording. */
+  /**
+   * A peer's replay cache in another executor's attempt: keyed on this
+   * executor's target, the peer's name, and the target and agent of the test
+   * that brought it, so no user replays another's recording, nor one peer
+   * its own from another pair of the test.
+   */
   peerCache(testId: string, attemptIndex: number, user: CachePeerIdentity): AgentCacheContext | undefined {
     return createAgentCacheContext({
       cache: this.config.cache,
