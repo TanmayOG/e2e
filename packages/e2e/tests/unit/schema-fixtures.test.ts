@@ -126,6 +126,7 @@ describe.each(schemas)('%s schema', (name) => {
         [() => (video['user'] = ''), () => (video['user'] = 'guest')],
         [() => (line['user'] = 'x'.repeat(129)), () => (line['user'] = 'x'.repeat(128))],
         [() => (peers['..'] = {}), () => delete peers['..']],
+        [() => (peers['guest']!['region'] = 'eu'), () => delete peers['guest']!['region']],
         [() => delete peers['guest']!['target'], () => (peers['guest']!['target'] = 'web')],
         [() => (peers['guest']!['target'] = ''), () => (peers['guest']!['target'] = 'web')],
         [() => (peers['guest']!['environment'] = { cores: 8 }), () => (peers['guest']!['environment'] = { cores: '8' })],
