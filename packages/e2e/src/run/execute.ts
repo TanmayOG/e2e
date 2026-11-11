@@ -3,7 +3,7 @@
 import { mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { EngineDisposeContext, EngineSnapshot, ResolveSecretOptions } from '../engine/index.ts';
+import type { EngineDisposeContext, EngineHandle, EngineSnapshot, ResolveSecretOptions } from '../engine/index.ts';
 import type { TargetSession, OperationContext, VideoSegment } from '../engine/surface.ts';
 import type { ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
 import {
@@ -246,6 +246,8 @@ export class TargetExecutor implements SerialHost {
   private readonly runErrors: RunError[] = [];
   /** The executors of this worker's peer engines, by target and position among an attempt's peers on it. */
   private readonly peerExecutors = new Map<string, Promise<TargetExecutor>>();
+  /** The engine objects this worker's peers run on: one object is one engine client, which drives one attempt at a time. */
+  private readonly peerEngines = new Set<EngineHandle>();
   /** Fails the attempt in flight from outside it, while one is; see `strayRejection`. */
   private strayFailure: ((cause: unknown) => void) | undefined;
   /** The last test whose attempt ended here: the likely source of a rejection that surfaces between attempts. */
@@ -466,13 +468,16 @@ export class TargetExecutor implements SerialHost {
     // The load matched the runner's config digest, so it declares every target selection checked.
     const target = config.targets.find((candidate) => candidate.name === targetName)!;
     // An engine made inside a package is one object every load of the config
-    // shares; it drives one attempt at a time, so it cannot serve two users.
-    if (target.engine !== undefined && target.engine === this.target.engine) {
+    // shares; it drives one attempt at a time, so it cannot serve two users,
+    // whichever targets they run on.
+    const engine = target.engine;
+    if (engine !== undefined && (engine === this.target.engine || this.peerEngines.has(engine))) {
       throw new ConfigurationError(
         'INVALID_CONFIG',
-        `${named} runs a peer on target "${targetName}", whose engine is the same instance in every load of the config, so it cannot run next to another user; create the engine in the config file or a project file it imports, not inside a package`,
+        `${named} runs a peer on target "${targetName}", whose engine is the same instance as another user's in every load of the config, so it cannot run next to them; create the engine in the config file or a project file it imports, not inside a package`,
       );
     }
+    if (engine !== undefined) this.peerEngines.add(engine);
     return new TargetExecutor({
       config,
       target,
@@ -1199,7 +1204,7 @@ export class TargetExecutor implements SerialHost {
           operation: (signal, timeoutMs) => this.op(attemptId, timeoutMs, signal),
           interrupt: this.interruptSignal,
         }).catch(() => undefined);
-        if (peerEvidence !== undefined) record.peers = { ...record.peers, [open.name]: { ...record.peers?.[open.name], failure: peerEvidence } };
+        if (peerEvidence !== undefined) record.peers = { ...record.peers, [open.name]: { target: open.executor.target.name, ...record.peers?.[open.name], failure: peerEvidence } };
       }
     };
     const inMemory = this.options.inMemory?.file === pair.test.file ? this.options.inMemory : undefined;
@@ -1566,8 +1571,12 @@ export class TargetExecutor implements SerialHost {
       // Peers close first, each with the verdict the test reached.
       for (const open of openPeers) {
         await this.closePeer(open, { attemptId, video }, record, secondaryErrors);
+        // Every peer that opened is told under its name, with the target it ran on.
         const environment = open.session.environment.read(redact);
-        if (environment !== undefined) record.peers = { ...record.peers, [open.name]: { ...record.peers?.[open.name], environment } };
+        record.peers = {
+          ...record.peers,
+          [open.name]: { target: open.executor.target.name, ...record.peers?.[open.name], ...(environment === undefined ? {} : { environment }) },
+        };
       }
       // A serial member's recording ends with the member, not the group.
       if (openSession !== null && shared !== undefined) {

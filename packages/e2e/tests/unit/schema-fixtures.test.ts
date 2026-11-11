@@ -126,7 +126,8 @@ describe.each(schemas)('%s schema', (name) => {
         [() => (video['user'] = ''), () => (video['user'] = 'guest')],
         [() => (line['user'] = 'x'.repeat(129)), () => (line['user'] = 'x'.repeat(128))],
         [() => (peers['..'] = {}), () => delete peers['..']],
-        [() => (peers['guest']!['target'] = 'web'), () => delete peers['guest']!['target']],
+        [() => delete peers['guest']!['target'], () => (peers['guest']!['target'] = 'web')],
+        [() => (peers['guest']!['target'] = ''), () => (peers['guest']!['target'] = 'web')],
         [() => (peers['guest']!['environment'] = { cores: 8 }), () => (peers['guest']!['environment'] = { cores: '8' })],
         [() => (peers['guest']!['failure'] = { screen: 1 }), () => (peers['guest']!['failure'] = {})],
       ];

@@ -69,6 +69,8 @@ export interface FailureEvidence {
 
 /** What an attempt kept of one peer beside its steps: the peer's engine's environment facts and its failure evidence. */
 export interface PeerAttemptFacts {
+  /** The target the peer's app ran on. */
+  target: string;
   environment?: Record<string, string>;
   failure?: FailureEvidence;
 }

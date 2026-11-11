@@ -425,13 +425,15 @@
         "cleanup": { "enum": ["complete", "failed", "forced"] },
         "environment": { "$ref": "#/$defs/environment" },
         "peers": {
-          "description": "What each peer's app ran on, and what the runner saw on it when the failure landed, by peer name. Absent when the test has no peers.",
+          "description": "The target each peer's app ran on, what the engine said it ran on, and what the runner saw on it when the failure landed, by peer name. Absent when the test has no peers.",
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/user" },
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
+            "required": ["target"],
             "properties": {
+              "target": { "type": "string", "minLength": 1 },
               "environment": { "$ref": "#/$defs/environment" },
               "failure": { "$ref": "#/$defs/failureEvidence" }
             }

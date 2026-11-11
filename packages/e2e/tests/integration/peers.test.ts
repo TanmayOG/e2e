@@ -64,23 +64,44 @@ test('alone', { platforms: ['fake'] }, async () => {});
     }
   });
 
-  it('refuses, before anything starts, a run of a test whose peer is on another target, which this build cannot open yet', async () => {
+  it('refuses, before anything starts, a run of a test whose peer is on a phone target, which would need a device of its own', async () => {
+    const phone = { name: 'iphone', platform: 'ios', engine: createFakeEngine({ state: true }).engine, app: FAKE_APP };
     const { outcome, project } = await runProject(
       {
         'tests/pay.e2e.ts': `import { test } from 'e2e';
-test('pays', { platforms: ['fake'], peers: { ava: { target: 'phone' } } }, async () => {});
+test('pays', { platforms: ['fake'], peers: { bob: {}, ava: { target: 'iphone' } } }, async () => {});
 `,
       },
-      { config: { targets: TARGETS } },
+      { config: { targets: [TARGETS[0]!, phone] } },
     );
     try {
       expect(outcome.results).toEqual([]);
       expect(outcome.exitCode).not.toBe(0);
       expect(outcome.report.run.errors.map((error) => [error.code, error.phase, error.message])).toEqual([
-        ['UNSUPPORTED_CAPABILITY', 'collection', 'test "pays" in tests/pay.e2e.ts runs peer "ava" on target "phone"; this build runs a peer on the test\'s own target only'],
+        [
+          'UNSUPPORTED_CAPABILITY',
+          'collection',
+          'test "pays" in tests/pay.e2e.ts runs peer "ava" on target "iphone", a ios target; this build cannot reserve a device for a peer yet, so a peer runs on a target that is not a phone only',
+        ],
       ]);
     } finally {
       project.cleanup();
+    }
+    // A test that does not run opens no peer, so its phone peer holds nothing back.
+    const skipped = await runProject(
+      {
+        'tests/pay.e2e.ts': `import { test } from 'e2e';
+test('later', { skip: true, platforms: ['fake'], peers: { ava: { target: 'iphone' } } }, async () => {});
+test('now', { platforms: ['fake'] }, async () => {});
+`,
+      },
+      { config: { targets: [TARGETS[0]!, phone] } },
+    );
+    try {
+      expect(skipped.outcome.report.run.errors).toEqual([]);
+      expect(skipped.outcome.results.find((result) => result.test.title === 'now' && result.target.name === 'fake')?.status).toBe('passed');
+    } finally {
+      skipped.project.cleanup();
     }
   });
 });
@@ -581,6 +602,115 @@ test('histories', { peers: { ava: {} } }, async ({ app, agent, peers }) => {
   });
 });
 
+describe('peers on another web target', () => {
+  let app: FixtureApp;
+  let other: FixtureApp;
+  beforeAll(async () => {
+    app = await startFixtureApp();
+    other = await startFixtureApp();
+    process.env['OTHER_URL'] = other.url;
+  });
+  afterAll(async () => {
+    delete process.env['OTHER_URL'];
+    await app.close();
+    await other.close();
+  });
+
+  /** The test's own Chromium target, and another on its own app, in French. */
+  const twoTargets = (otherApp: string) => `import type { E2EConfig } from 'e2e';
+import { web } from '@e2e-dev/web';
+
+export default {
+  targets: [
+    { name: 'web', engine: web(), app: { url: process.env.APP_URL! } },
+    { name: 'french', engine: web({ locale: 'fr-FR' }), app: ${otherApp} },
+  ],
+  workers: 1,
+} satisfies E2EConfig;
+`;
+
+  it("runs a peer on another web target, on that target's own engine, app, and saved login", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/auth.setup.e2e.ts': `import { test, expect } from 'e2e';
+test.setup('sign in ava', { sessions: ['ava'] }, async ({ app, screen, session }) => {
+  await app.open('/storage');
+  await screen.getByRole('button', 'Save marker').tap();
+  await expect(screen.getByRole('status', 'Marker')).toHaveText('saved');
+  await session.save('ava');
+});
+`,
+        'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('across', { peers: { ava: { target: 'french', session: 'ava' } } }, async ({ app, peers }) => {
+  await app.open('/storage');
+  await peers.ava.app.open('/storage');
+  await expect(peers.ava.screen.getByRole('status', 'Marker')).toHaveText('saved');
+  const where = await peers.ava.browser.url();
+  if (!where.startsWith(process.env.OTHER_URL!)) throw new Error('Ava opened ' + where);
+  const language = await peers.ava.browser.evaluate('navigator.language');
+  if (language !== 'fr-FR') throw new Error('Ava runs in ' + language);
+});
+`,
+      },
+      { appUrl: app.url, configSource: twoTargets('{ url: process.env.OTHER_URL! }') },
+    );
+    try {
+      // The test runs on each target as its own, as every test does; its peer is on "french" both times.
+      const results = outcome.results.filter((result) => result.test.title === 'across');
+      expect(results.map((result) => [result.target.name, result.status]).toSorted()).toEqual([
+        ['french', 'passed'],
+        ['web', 'passed'],
+      ]);
+      const document = JSON.parse(readFileSync(path.join(project.dir, '.e2e', 'report.json'), 'utf8')) as unknown;
+      assertValidReport(document);
+      const onWeb = results.find((result) => result.target.name === 'web')!.attempts[0]!;
+      expect(onWeb.peers?.['ava']?.target).toBe('french');
+      expect(onWeb.peers?.['ava']?.environment?.['browser']).toMatch(/chromium/u);
+      expect(onWeb.steps.filter((step) => step.user === 'ava').map((step) => step.api)).toEqual(['app.open', 'expect.toHaveText', 'browser.url', 'browser.evaluate']);
+      // The test's own user stays on its own app: its main page was the first app's.
+      expect(app.url).not.toBe(other.url);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("starts the app command of a peer's target once for the run, on the free port the run chose for it", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'other-app.mjs': `import { appendFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+appendFileSync(new URL('./started.log', import.meta.url), 'started\\n');
+createServer((_request, response) => {
+  response.writeHead(200, { 'content-type': 'text/html' });
+  response.end('<!doctype html><title>Other</title><h1>Other app</h1>');
+}).listen(Number(process.env.PORT), '127.0.0.1');
+`,
+        'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('across', { peers: { ava: { target: 'french' } } }, async ({ app, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  await expect(peers.ava.screen.getByRole('heading', 'Other app')).toBeVisible();
+});
+`,
+      },
+      {
+        appUrl: app.url,
+        configSource: twoTargets(`{ url: 'http://127.0.0.1:0', command: { executable: process.execPath, args: ['other-app.mjs'], env: { PORT: '{port}' } } }`),
+      },
+    );
+    try {
+      const results = outcome.results.filter((result) => result.test.title === 'across');
+      expect(results.map((result) => [result.target.name, result.status, JSON.stringify(result.attempts[0]?.error ?? null)]).toSorted()).toEqual([
+        ['french', 'passed', 'null'],
+        ['web', 'passed', 'null'],
+      ]);
+      expect(readFileSync(path.join(project.dir, 'started.log'), 'utf8')).toBe('started\n');
+    } finally {
+      project.cleanup();
+    }
+  });
+});
+
 describe('peers: the replay cache', () => {
   let app: FixtureApp;
   beforeAll(async () => {
@@ -711,6 +841,37 @@ test('strict', { peers: { ava: {} } }, async ({ app, agent, screen, peers }) => 
         ['ava', 'missed', 'no-entry'],
       ]);
       expect(calls(project)).toHaveLength(2);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("keys a peer's recording on the peer's own target", async () => {
+    const twoTargets = counterConfig.replace(
+      "targets: [{ name: 'web', engine: web(), app: { url: process.env.APP_URL! } }],",
+      "targets: [{ name: 'web', engine: web(), app: { url: process.env.APP_URL! } }, { name: 'web-b', engine: web(), app: { url: process.env.APP_URL! } }],",
+    );
+    expect(twoTargets).not.toBe(counterConfig);
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('elsewhere', { platforms: ['web'], peers: { ava: { target: 'web-b' } } }, async ({ app, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  await peers.ava.agent.act('increment the counter twice');
+  await expect(peers.ava.screen.getByRole('status', 'Counter')).toHaveText('2');
+});
+`,
+      },
+      { appUrl: app.url, configSource: twoTargets },
+    );
+    try {
+      const results = outcome.results.filter((result) => result.test.title === 'elsewhere');
+      expect(results.map((result) => result.status)).toEqual(['passed', 'passed']);
+      const files = readdirSync(path.join(project.dir, '.e2e', 'cache'), { recursive: true }).filter((file) => String(file).endsWith('.json'));
+      const recordedFor = files.map((file) => (JSON.parse(readFileSync(path.join(project.dir, '.e2e', 'cache', String(file)), 'utf8')) as { payload: { recordedFor?: { targetId: string; user?: string } } }).payload.recordedFor);
+      // Both runs of the test have Ava on "web-b": one recording, on her target.
+      expect(recordedFor.map((step) => [step?.targetId, step?.user])).toEqual([['web-b', 'ava']]);
     } finally {
       project.cleanup();
     }
@@ -987,7 +1148,104 @@ export default { targets: [{ name: 'shared', platform: 'shared', engine, app: { 
       const { result, attempt, why } = onlyAttempt(outcome, 'pair');
       expect(result.status, why).toBe('failed');
       expect(attempt.error).toMatchObject({ code: 'INVALID_CONFIG', phase: 'launch' });
-      expect(attempt.error?.message).toContain('whose engine is the same instance in every load of the config');
+      expect(attempt.error?.message).toContain("whose engine is the same instance as another user's in every load of the config");
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("starts the app of a peer's target that runs no test of its own, on the port the run chose", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'other-app.mjs': `import { appendFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+appendFileSync(new URL('./started.log', import.meta.url), process.env.PORT + '\\n');
+createServer((_request, response) => response.end('other')).listen(Number(process.env.PORT), '127.0.0.1');
+`,
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+import { readFileSync } from 'node:fs';
+test('pair', { requires: ['state'], peers: { ava: { target: 'other' } } }, async ({ peers }) => {
+  // The run started the other target's app on a free port, and the peer's engine reads the same port.
+  const started = readFileSync(new URL('../started.log', import.meta.url), 'utf8').trim();
+  if (!peers.ava.app.baseUrl.endsWith(':' + started)) throw new Error('the peer app is at ' + peers.ava.app.baseUrl + ', its command on ' + started);
+});
+`,
+      },
+      {
+        configSource: `import type { E2EConfig } from 'e2e';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+
+export default {
+  targets: [
+    { name: 'fake', platform: 'fake', engine: createFakeEngine({ state: true }).engine, app: FAKE_APP },
+    // No saved state: the test requires it, so this target runs none of its own.
+    {
+      name: 'other',
+      platform: 'other',
+      engine: createFakeEngine().engine,
+      app: { url: 'http://127.0.0.1:0', command: { executable: process.execPath, args: ['other-app.mjs'], env: { PORT: '{port}' } } },
+    },
+  ],
+  workers: 1,
+} satisfies E2EConfig;
+`,
+      },
+    );
+    try {
+      const results = outcome.results.filter((result) => result.test.title === 'pair');
+      expect(results.map((result) => [result.target.name, result.status]).toSorted()).toEqual([
+        ['fake', 'passed'],
+        ['other', 'skipped'],
+      ]);
+      const onFake = results.find((result) => result.target.name === 'fake')!;
+      expect(onFake.attempts[0]?.error, JSON.stringify(onFake.attempts[0]?.error)).toBeUndefined();
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it('refuses a second user on an engine object another user in the worker already runs on, whichever target names it', async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('two targets', { platforms: ['fake'], peers: { ava: { target: 'left' }, bob: { target: 'right' } } }, async () => {});
+test('one target', { platforms: ['fake'], peers: { ava: { target: 'left' }, bob: { target: 'left' } } }, async () => {});
+test('apart', { platforms: ['fake'], peers: { ava: { target: 'left' } } }, async () => {});
+`,
+      },
+      {
+        configSource: `import type { E2EConfig } from 'e2e';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+
+// One engine object every load of the config shares, as one made inside a package is.
+const g = globalThis as { __shared?: ReturnType<typeof createFakeEngine>['engine'] };
+const shared = (g.__shared ??= createFakeEngine({ state: true }).engine);
+
+export default {
+  targets: [
+    { name: 'fake', platform: 'fake', engine: createFakeEngine({ state: true }).engine, app: FAKE_APP },
+    { name: 'left', platform: 'shared', engine: shared, app: FAKE_APP },
+    { name: 'right', platform: 'shared', engine: shared, app: FAKE_APP },
+  ],
+  workers: 1,
+} satisfies E2EConfig;
+`,
+      },
+    );
+    try {
+      const onFake = (title: string) => {
+        const result = outcome.results.find((candidate) => candidate.test.title === title && candidate.target.name === 'fake')!;
+        return { result, attempt: result.attempts[0]!, why: JSON.stringify(result.attempts.map((each) => each.error)) };
+      };
+      for (const [title, target] of [['two targets', 'right'], ['one target', 'left']] as const) {
+        const { result, attempt, why } = onFake(title);
+        expect(result.status, why).toBe('failed');
+        expect(attempt.error).toMatchObject({ code: 'INVALID_CONFIG', phase: 'launch' });
+        expect(attempt.error?.message).toContain(`runs a peer on target "${target}", whose engine is the same instance as another user's`);
+      }
+      // A worker runs one test at a time: the next test's peer takes the engine again.
+      const apart = onFake('apart');
+      expect(apart.result.status, apart.why).toBe('passed');
     } finally {
       project.cleanup();
     }

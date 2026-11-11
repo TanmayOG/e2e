@@ -587,7 +587,10 @@ export function renderTracePage(report: Report1Document, result: ReportResult, f
     Object.entries(environment ?? {}).map(([name, value]) => `${cell(name, MAX_ID_CHARS)} ${code(value, MAX_CELL_CHARS)}`).join(' · ');
   if (ranOn(told.environment) !== '') lines.push(`Ran on: ${ranOn(told.environment)}`, '');
   for (const [user, peer] of Object.entries(told.peers ?? {})) {
-    if (ranOn(peer.environment) !== '') lines.push(`${cell(user, MAX_ID_CHARS)} ran on: ${ranOn(peer.environment)}`, '');
+    // A peer on another target says which; one on the test's own needs no telling.
+    const elsewhere = peer.target === result.targetId ? '' : ` target ${code(peer.target, MAX_ID_CHARS)}`;
+    const facts = ranOn(peer.environment);
+    if (elsewhere !== '' || facts !== '') lines.push(`${cell(user, MAX_ID_CHARS)} ran on${elsewhere}${facts === '' ? '' : `: ${facts}`}`, '');
   }
 
   // A test that failed as `test.fail` expected tells that failure, also below an earlier attempt's.

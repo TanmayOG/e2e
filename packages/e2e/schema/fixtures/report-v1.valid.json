@@ -351,6 +351,7 @@
             },
             "peers": {
               "guest": {
+                "target": "web",
                 "environment": {
                   "browser": "chromium 141.0.7390.37"
                 },

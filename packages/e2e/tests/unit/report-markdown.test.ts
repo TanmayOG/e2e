@@ -344,7 +344,7 @@ describe('renderMarkdownReport', () => {
     });
     failedAttempt.artifacts = failedAttempt.artifacts.map((artifact, index) => (index === 1 ? { ...artifact, user: 'ava', path: 't/attempt-0/peers/ava/video-1.bin' } : artifact));
     failedAttempt.failure = { url: '/cart', candidates: ['#n2 button "Pay"'] };
-    failedAttempt.peers = { ava: { failure: { url: '/invites', candidates: ['#n7 button "Accept"'] } } };
+    failedAttempt.peers = { ava: { target: 'web', failure: { url: '/invites', candidates: ['#n7 button "Accept"'] } } };
     const body = renderMarkdownReport(page({ status: 'failed', results: [named({ title: 'invites', status: 'failed', attempts: [failedAttempt] })] }), { artifactsDir: '.e2e/artifacts' });
     expect(body).toContain('**ASSERTION_FAILED** at step 2 of 2: ava · `agent.act` "Accept the invite", after 2.0s');
     expect(body).toContain('- Screen: `/invites`\n- Closest to the locator: `#n7 button "Accept"`');

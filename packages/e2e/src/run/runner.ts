@@ -915,7 +915,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
           // decides an empty one, so a mistyped --tag fails before any
           // filter calls a model.
           const firstPass = select(collection, config, inputs.filters, flags);
-          refuseUnbuiltPeers(firstPass);
+          refusePhonePeers(firstPass);
           return { collection, filters: inputs.filters, selection: firstPass };
         }),
       );
@@ -1393,14 +1393,24 @@ function toListedPair(projectRoot: string, pair: TestTargetPair): ListedPair {
  * is collected and scheduled but not opened yet, so a run that needs one is
  * refused before anything starts instead of silently leaving it out.
  */
-function refuseUnbuiltPeers(selection: Selection): void {
+/** The platforms whose targets drive a device, which a peer would need one of its own of. */
+const PHONE_PLATFORMS: ReadonlySet<string> = new Set(['ios', 'android']);
+
+/**
+ * Refuses, before anything starts, a run of a test with a peer on a phone
+ * target: a peer needs a device of its own, and the run does not reserve one
+ * for it yet, so it would take a device another worker runs on.
+ */
+function refusePhonePeers(selection: Selection): void {
+  const platforms = new Map(selection.perTarget.map(({ target }) => [target.name, target.platform]));
   for (const pair of selection.pairs) {
     if (pair.disposition !== 'run') continue;
-    const elsewhere = pair.options.peers.find((peer) => peerTarget(peer, pair) !== pair.target.name);
-    if (elsewhere === undefined) continue;
+    const phone = pair.options.peers.find((peer) => PHONE_PLATFORMS.has(platforms.get(peerTarget(peer, pair)) ?? ''));
+    if (phone === undefined) continue;
+    const target = peerTarget(phone, pair);
     throw new ConfigurationError(
       'UNSUPPORTED_CAPABILITY',
-      `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file} runs peer "${elsewhere.name}" on target "${peerTarget(elsewhere, pair)}"; this build runs a peer on the test's own target only`,
+      `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file} runs peer "${phone.name}" on target "${target}", a ${platforms.get(target)} target; this build cannot reserve a device for a peer yet, so a peer runs on a target that is not a phone only`,
     );
   }
 }
