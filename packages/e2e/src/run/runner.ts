@@ -324,12 +324,6 @@ export interface ListOptions
   targets?: readonly string[] | undefined;
 }
 
-/**
- * One test, target, and agent the selection produced, filtered pairs
- * included. `id` is the result id `report.json` stores for repeat 0.
- * `source`, `session`, and `serialId` are present and `undefined` when the
- * test has none; `reason` is omitted unless the pair is skipped or filtered.
- */
 /** One peer of a listed pair, with its defaults filled in from the pair. */
 export interface ListedPeer {
   readonly name: string;
@@ -338,6 +332,12 @@ export interface ListedPeer {
   readonly agent: string;
 }
 
+/**
+ * One test, target, and agent the selection produced, filtered pairs
+ * included. `id` is the result id `report.json` stores for repeat 0.
+ * `source`, `session`, and `serialId` are present and `undefined` when the
+ * test has none; `reason` is omitted unless the pair is skipped or filtered.
+ */
 export interface ListedPair {
   readonly id: string;
   readonly file: string;
@@ -1447,11 +1447,6 @@ function toListedPair(projectRoot: string, pair: TestTargetPair): ListedPair {
   };
 }
 
-/**
- * A peer runs on the test's own target in this build; one on another target
- * is collected and scheduled but not opened yet, so a run that needs one is
- * refused before anything starts instead of silently leaving it out.
- */
 /**
  * The selection filters the options ask for. `--last-failed` reads the
  * previous run's report here, before collection is judged, so a missing
