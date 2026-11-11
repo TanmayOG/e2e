@@ -104,6 +104,10 @@ export async function selectStandaloneTest(
   if (pair.options.session !== undefined) {
     throw unsupported(`${named} starts from session "${pair.options.session}", which a setup test saves first; a session does not run setup tests yet, so run it with npx e2e run`);
   }
+  if (pair.options.peers.length > 0) {
+    const peers = pair.options.peers.map((peer) => `"${peer.name}"`).join(', ');
+    throw unsupported(`${named} runs peers ${peers}, each on an app of its own; a session drives one app, so run it with npx e2e run`);
+  }
   if (otherAgents.length > 0) {
     const agents = [pair, ...otherAgents].map((each) => `"${each.agent}"`).join(', ');
     throw unsupported(`${named} runs as agents ${agents}; a session runs one, so run it with npx e2e run`);

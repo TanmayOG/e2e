@@ -217,6 +217,7 @@ describe('open_session {test}', { timeout: 120_000 }, () => {
         'tests/visual.e2e.ts': VISUAL,
         'tests/expected.e2e.ts': EXPECTED,
         'tests/marked-hooks.e2e.ts': MARKED_HOOKS,
+        'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('with a peer', { peers: { ava: {}, bob: {} } }, async () => {});\n`,
       });
       const transport = new StdioClientTransport({
         command: process.execPath,
@@ -378,6 +379,9 @@ describe('open_session {test}', { timeout: 120_000 }, () => {
       );
       expect(await refused('tests/others.e2e.ts:12')).toMatch(/^SESSION_TEST_UNSUPPORTED: test "flow › step one" \(tests\/others\.e2e\.ts:12\) is in a serial group/);
       expect(await refused('tests/others.e2e.ts:17')).toMatch(/^SESSION_TEST_UNSUPPORTED: test "signed in" \(tests\/others\.e2e\.ts:17\) starts from session "member"/);
+      expect(await refused('tests/pair.e2e.ts')).toBe(
+        'SESSION_TEST_UNSUPPORTED: test "with a peer" (tests/pair.e2e.ts:2) runs peers "ava", "bob", each on an app of its own; a session drives one app, so run it with npx e2e run',
+      );
       expect((await invoke('close_session')).text).toBe('No session is open.');
     });
   });

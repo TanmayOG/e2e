@@ -849,6 +849,55 @@ test('${name}', ${options}, async () => {
   });
 });
 
+describe('peers: targets a peer cannot run on', () => {
+  it("fails the run before any test, with the engine's own code, when a peer's target leases its browsers from a provider", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('pair', { platforms: ['fake'], peers: { ava: { target: 'cloud' } } }, async () => {});
+`,
+      },
+      {
+        configSource: `import type { E2EConfig } from 'e2e';
+import { appendFileSync } from 'node:fs';
+import { web } from '@e2e-dev/web';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+
+const cloud = {
+  name: 'toy-cloud',
+  async acquire() {
+    appendFileSync(new URL('./leases.log', import.meta.url), 'acquired\\n');
+    return { id: 'lease', cdpEndpoint: 'ws://127.0.0.1:9' };
+  },
+  async release() {},
+};
+
+export default {
+  targets: [
+    { name: 'fake', platform: 'fake', engine: createFakeEngine({ state: true }).engine, app: FAKE_APP },
+    { name: 'cloud', engine: web({ browser: cloud }), app: { url: 'http://127.0.0.1:4599' } },
+  ],
+  workers: 1,
+} satisfies E2EConfig;
+`,
+      },
+    );
+    try {
+      expect(outcome.results.filter((result) => result.attempts.length > 0)).toEqual([]);
+      expect(outcome.report.run.errors.map((error) => [error.code, error.phase, error.message])).toEqual([
+        [
+          'UNSUPPORTED_CAPABILITY',
+          'launch',
+          'target "cloud" leases its browsers from toy-cloud, and a test\'s peer on it would need a lease of its own, which this version does not take for a peer; run the peer on a target that launches its browser on this machine',
+        ],
+      ]);
+      expect(existsSync(path.join(project.dir, 'leases.log'))).toBe(false);
+    } finally {
+      project.cleanup();
+    }
+  });
+});
+
 describe('peers: the replay cache', () => {
   let app: FixtureApp;
   beforeAll(async () => {

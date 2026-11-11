@@ -6,7 +6,7 @@ import { collectFromRegistration, type Collection } from '../../src/collect/coll
 import { collectModule, test } from '../../src/collect/registry.ts';
 import { pairRecording, pairRecordings, repeatEach, resolveOptions, select, type SelectionFilters } from '../../src/collect/select.ts';
 import { resolveConfig } from '../../src/config/resolve.ts';
-import { defineEngine } from '../../src/engine/index.ts';
+import { connectEngine, defineEngine, describeEngine, loopbackTransport } from '../../src/engine/index.ts';
 import { resultId } from '../../src/internal/ids.ts';
 import type { E2EConfig } from '../../src/types.ts';
 
@@ -1031,6 +1031,19 @@ describe('peers', () => {
       'test "from the web" in tests/a.e2e.ts runs peer "ava" on target "admin", which this run does not select; add --target admin',
     );
     expect(running(select(col, twoTargets(), { targetIds: ['web', 'admin'] }))).toEqual(['from the web']);
+  });
+
+  it('refuses a peer on a target whose engine runs in an engine server, and takes one on an engine the config creates', async () => {
+    const local = defineEngine({ name: 'local', version: '1.0.0', spiVersion: 1, platform: 'admin' });
+    const served = connectEngine({ manifest: describeEngine(local), transport: loopbackTransport(local) });
+    const col = await collection(() => {
+      test('from the web', { platforms: ['web'], peers: { ava: { target: 'admin' } } }, noop);
+    });
+    const withEngine = (engine: typeof local) => config({ targets: [{ name: 'web', platform: 'web' }, { name: 'admin', engine, app: { url: 'http://localhost:3001' } }] });
+    expect(() => select(col, withEngine(served))).toThrow(
+      'test "from the web" in tests/a.e2e.ts runs peer "ava" on target "admin", whose engine runs in an engine server (connectEngine); a peer runs on an engine in the worker\'s own process only, so give the peer a target whose engine the config creates',
+    );
+    expect(running(select(col, withEngine(local)))).toEqual(['from the web']);
   });
 
   it('fails when no setup test produces a peer session, naming the peer', async () => {

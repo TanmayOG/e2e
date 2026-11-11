@@ -10,6 +10,7 @@ import { attemptKeep, attemptVideo, type AttemptRecordings, type RecordingKind, 
 import type { Capability, RecordingMode, TestOptions } from '../types.ts';
 import { excludingEntry, type Collection, type CollectedTest, type UncollectedFile } from './collect.ts';
 import { groupChain } from './registry.ts';
+import { isServedEngine } from '../engine/protocol/client.ts';
 
 /** One more user a test declares, as written: its target defaults per pair (`peerTarget`). */
 export interface ResolvedPeer {
@@ -944,6 +945,14 @@ function applySessionSelection(
       if (target === undefined) {
         throw new CollectionError(
           `${named} runs peer "${peer.name}" on target "${targetName}", which this run does not select; add --target ${targetName}`,
+        );
+      }
+      // A peer's engine comes from a second load of the config in the
+      // worker; a target served by an engine server gets one more connection
+      // to the same server, which this version does not open for a peer.
+      if (target.engine !== undefined && isServedEngine(target.engine)) {
+        throw new CollectionError(
+          `${named} runs peer "${peer.name}" on target "${targetName}", whose engine runs in an engine server (connectEngine); a peer runs on an engine in the worker's own process only, so give the peer a target whose engine the config creates`,
         );
       }
       if (peer.session === undefined) continue;
