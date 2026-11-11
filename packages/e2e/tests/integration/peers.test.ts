@@ -1189,6 +1189,68 @@ test('second', { peers: { ava: {} } }, async () => {});
     }
   });
 
+  it("closes every user's app when the test times out in a peer's step, when the run is interrupted mid-test, and at the run's time limit", async () => {
+    // A peer step that never finishes on its own: the fake engine's tap waits on its signal.
+    const files = {
+      'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('slow peer', { peers: { ava: {} }, timeout: 800 }, async ({ peers }) => {
+  await peers.ava.screen.getByRole('button', 'Submit').tap();
+});
+`,
+    };
+    const hanging = lifecycleConfig('').replace(
+      "const engine = createFakeEngine({",
+      "const engine = createFakeEngine({\n  perform: (_ref, _action, operation) => new Promise((_resolve, reject) => operation.signal.addEventListener('abort', () => reject(operation.signal.reason), { once: true })),",
+    );
+    expect(hanging).not.toBe(lifecycleConfig(''));
+    const timedOut = await runProjectWithConfigFile(files, { configSource: hanging });
+    try {
+      const { result, attempt, why } = onlyAttempt(timedOut.outcome, 'slow peer');
+      expect(result.status, why).toBe('timed-out');
+      expect(attempt.steps.find((step) => step.api === 'locator.tap')).toMatchObject({ user: 'ava' });
+      expect(attempt.steps.find((step) => step.api === 'locator.tap')?.status).not.toBe('passed');
+      expect(workerEvents(timedOut.project.dir)).toEqual(['test init', 'test start', 'peer init', 'peer start', 'peer end', 'test end', 'peer dispose', 'test dispose']);
+    } finally {
+      timedOut.project.cleanup();
+    }
+
+    // The same test with a long timeout, interrupted once the peer's step is running.
+    const interrupt = new AbortController();
+    const interrupted = await runProjectWithConfigFile(
+      { 'tests/pair.e2e.ts': files['tests/pair.e2e.ts'].replace('timeout: 800', 'timeout: 60_000') },
+      {
+        configSource: hanging,
+        runOptions: {
+          interruptSignal: interrupt.signal,
+          onEvent: (event) => {
+            if (event.type === 'step' && event.progress.phase === 'start' && event.progress.identity?.user === 'ava') setTimeout(() => interrupt.abort(), 200);
+          },
+        },
+      },
+    );
+    try {
+      const { result, why } = onlyAttempt(interrupted.outcome, 'slow peer');
+      expect(result.status, why).toBe('interrupted');
+      expect(interrupted.outcome.report.run.status).toBe('interrupted');
+      expect(workerEvents(interrupted.project.dir)).toEqual(['test init', 'test start', 'peer init', 'peer start', 'peer end', 'test end', 'peer dispose', 'test dispose']);
+    } finally {
+      interrupted.project.cleanup();
+    }
+
+    // And when the run's time limit lands mid-test.
+    const limited = await runProjectWithConfigFile(
+      { 'tests/pair.e2e.ts': files['tests/pair.e2e.ts'].replace('timeout: 800', 'timeout: 60_000') },
+      { configSource: hanging, runOptions: { maxDuration: 1_500 } },
+    );
+    try {
+      const { result, why } = onlyAttempt(limited.outcome, 'slow peer');
+      expect(result.status, why).toBe('interrupted');
+      expect(workerEvents(limited.project.dir)).toEqual(['test init', 'test start', 'peer init', 'peer start', 'peer end', 'test end', 'peer dispose', 'test dispose']);
+    } finally {
+      limited.project.cleanup();
+    }
+  });
+
   it('fails the launch when a peer app cannot open, and closes the test app too', async () => {
     const { outcome, project } = await runProjectWithConfigFile(
       { 'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('pair', { peers: { ava: {} } }, async () => {});\n` },
