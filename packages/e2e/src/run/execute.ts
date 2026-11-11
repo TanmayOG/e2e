@@ -180,7 +180,7 @@ function peerArtifactSink(sink: ArtifactSink, name: string): ArtifactSink {
   return {
     dir,
     register: (kind, relativePath, registration) => sink.register(kind, path.posix.join(relative, relativePath), { ...registration, user: name }),
-    link: (url, registration) => sink.link(url, registration),
+    link: (url, registration) => sink.link(url, { ...registration, user: name }),
   };
 }
 

@@ -1444,6 +1444,37 @@ test('second', { peers: { ava: {} } }, async () => {});
     }
   });
 
+  it("names the peer on a video its engine's host keeps by URL, as on a video file it writes", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      { 'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('filmed', { peers: { ava: {} }, video: 'on' }, async () => {});\n` },
+      {
+        configSource: `import type { E2EConfig } from 'e2e';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+
+export default {
+  targets: [{ name: 'fake', platform: 'fake', engine: createFakeEngine({ video: true, videoLinks: ['https://recordings.example/r.mp4'] }).engine, app: FAKE_APP }],
+  workers: 1,
+} satisfies E2EConfig;
+`,
+      },
+    );
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'filmed');
+      expect(result.status, why).toBe('passed');
+      const videos = attempt.artifacts.filter((artifact) => artifact.kind === 'video');
+      // Each user's engine hands back a link and a file: the peer's two carry its name, the test's own user's neither.
+      expect(videos.map((video) => [video.url === undefined ? 'file' : 'link', video.user ?? null]).toSorted()).toEqual([
+        ['file', null],
+        ['file', 'ava'],
+        ['link', null],
+        ['link', 'ava'],
+      ]);
+      assertValidReport(outcome.report);
+    } finally {
+      project.cleanup();
+    }
+  });
+
   it('gives a peer its own instance of an engine made in a project file the config imports', async () => {
     const { outcome, project } = await runProjectWithConfigFile(
       {

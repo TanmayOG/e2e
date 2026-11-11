@@ -165,6 +165,7 @@ export function createAttemptArtifacts(options: {
         mediaType: link.mediaType,
         url,
         startedAt: link.startedAt,
+        ...(link.user === undefined ? {} : { user: link.user }),
         redaction: REDACTION_BY_KIND.video,
         producer: stepId === undefined ? { kind: 'attempt' } : { kind: 'step', stepId },
       };
