@@ -676,7 +676,7 @@ test('across', { peers: { ava: { target: 'french' } } }, async ({ app, peers }) 
  * `devices` slots, a device each, and hands its workers which device every
  * slot drives. Each `prepare` and each engine start is a line of `pool.log`.
  */
-function poolConfig(devices: number, workers: number): string {
+function poolConfig(devices: number, workers: number, phones = ''): string {
   return `import type { E2EConfig } from 'e2e';
 import { appendFileSync } from 'node:fs';
 import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
@@ -690,6 +690,7 @@ const phones = createFakeEngine({
     return { workers: bound, env: { FAKE_POOL: Array.from({ length: bound }, (_, slot) => 'device-' + slot).join(',') } };
   },
   onInit: (info) => log('init ' + JSON.stringify({ slot: info.workerSlot, device: (info.env.FAKE_POOL ?? '').split(',')[info.workerSlot] ?? null })),
+  ${phones}
 }).engine;
 
 export default {
@@ -825,6 +826,76 @@ test('${name}', ${options}, async () => {
       expect(starts.toSorted((a, b) => Number(a['slot']) - Number(b['slot']))).toEqual([
         { slot: 0, device: 'device-0' },
         { slot: 1, device: 'device-1' },
+      ]);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("runs no more of a phone target's own workers than the fit left room for beside the peers it hosts, when its prepare serves more", async () => {
+    // The engine serves one worker of its own; prepare, asked for that worker's slot and the web test's peer's, serves both.
+    const files = {
+      'tests/web.e2e.ts': `import { test } from 'e2e';
+test('web', { platforms: ['fake'], peers: { ava: { target: 'phones' } } }, async () => {
+  await new Promise((resolve) => setTimeout(resolve, 400));
+});
+`,
+      ...Object.fromEntries(
+        ['p1', 'p2'].map((name) => [
+          `tests/${name}.e2e.ts`,
+          `import { test } from 'e2e';
+test('${name}', { platforms: ['ios'] }, async () => {
+  await new Promise((resolve) => setTimeout(resolve, 400));
+});
+`,
+        ]),
+      ),
+    };
+    const { outcome, project } = await runProjectWithConfigFile(files, { configSource: poolConfig(4, 8, 'workers: 1,') });
+    try {
+      expect(outcome.results.filter((result) => result.status !== 'skipped').map((result) => [result.test.title, result.target.name, result.status]).toSorted()).toEqual([
+        ['p1', 'phones', 'passed'],
+        ['p2', 'phones', 'passed'],
+        ['web', 'fake', 'passed'],
+      ]);
+      expect(poolLines(project.dir, 'prepare')).toEqual([{ slots: 2, peerSlots: 1 }]);
+      // One phone worker ran both phone files on slot 0; the web test's peer had slot 1 to itself.
+      expect(poolLines(project.dir, 'init').toSorted((a, b) => Number(a['slot']) - Number(b['slot']))).toEqual([
+        { slot: 0, device: 'device-0' },
+        { slot: 1, device: 'device-1' },
+      ]);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("runs no more of a phone target's workers than the fit when its prepare serves its own tests' peers too, past the engine's own bound", async () => {
+    // The engine serves two workers; prepare, asked for theirs and their peers' four slots, serves all four.
+    const files = Object.fromEntries(
+      ['p1', 'p2', 'p3', 'p4'].map((name) => [
+        `tests/${name}.e2e.ts`,
+        `import { test } from 'e2e';
+test('${name}', { platforms: ['ios'], peers: { ava: {} } }, async () => {
+  await new Promise((resolve) => setTimeout(resolve, 400));
+});
+`,
+      ]),
+    );
+    const { outcome, project } = await runProjectWithConfigFile(files, { configSource: poolConfig(4, 8, 'workers: 2,') });
+    try {
+      expect(outcome.results.filter((result) => result.status !== 'skipped').map((result) => [result.test.title, result.target.name, result.status]).toSorted()).toEqual([
+        ['p1', 'phones', 'passed'],
+        ['p2', 'phones', 'passed'],
+        ['p3', 'phones', 'passed'],
+        ['p4', 'phones', 'passed'],
+      ]);
+      expect(poolLines(project.dir, 'prepare')).toEqual([{ slots: 4, peerSlots: 2 }]);
+      // Two workers on slots 0 and 1, their peers on 2 and 3: each slot started once, on its own device.
+      expect(poolLines(project.dir, 'init').toSorted((a, b) => Number(a['slot']) - Number(b['slot']))).toEqual([
+        { slot: 0, device: 'device-0' },
+        { slot: 1, device: 'device-1' },
+        { slot: 2, device: 'device-2' },
+        { slot: 3, device: 'device-3' },
       ]);
     } finally {
       project.cleanup();

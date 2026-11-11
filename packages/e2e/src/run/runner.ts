@@ -1300,8 +1300,11 @@ async function prepareEngines(
       const result = results.get(plan.target.name);
       const own = planned.get(plan.target.name) ?? 0;
       const fittedWorkers = workers.get(plan.target.name) ?? 0;
-      // A target that gave workers up to peers runs what the fit left it; any other keeps the cap its engine reported.
-      const cap = fittedWorkers < Math.min(own, served(plan) ?? own) ? fittedWorkers : result?.workers;
+      // A target that gave workers up to peers runs what the fit left it, and so does one that hosts peers: what its
+      // engine serves counts the peers' slots too, and a worker beyond the fit would start on a slot a peer holds.
+      // Any other keeps the cap its engine reported.
+      const hostsPeers = slotsNeeded(plan.target.name, workers, brought).peerSlots > 0;
+      const cap = fittedWorkers < Math.min(own, served(plan) ?? own) || hostsPeers ? fittedWorkers : result?.workers;
       return {
         ...plan,
         ...(cap === undefined ? {} : { workers: cap }),
