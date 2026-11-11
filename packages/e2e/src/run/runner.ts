@@ -56,6 +56,7 @@ import { runUnits, type TargetFailure } from './scheduler.ts';
 import type { BeforeStep, HeldStep, StepPrompt } from './step-hold.ts';
 import { stepPromptLine } from '../report/list-steps.ts';
 import { buildWorkPlans, nonRunResult, orderWorkPlans, plannedSlots, type TargetWorkPlan, type TimeLimit } from './units.ts';
+import { fitWorkers, peerSlotsOf, peersBrought, slotsNeeded, type PeerSlots, type PeersBrought } from './peer-slots.ts';
 import { SessionStore } from './sessions.ts';
 import { outputLayout } from './output.ts';
 import type { RunnerOutput } from './process-output.ts';
@@ -915,7 +916,6 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
           // decides an empty one, so a mistyped --tag fails before any
           // filter calls a model.
           const firstPass = select(collection, config, inputs.filters, flags);
-          refusePhonePeers(firstPass);
           return { collection, filters: inputs.filters, selection: firstPass };
         }),
       );
@@ -977,6 +977,10 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     // The work units, built once: the same plans tell each engine's `prepare`
     // how many worker slots to provision and the scheduler what to dispatch.
     let plans = buildWorkPlans(selection, collection, config.projectRoot);
+    // A test's peers run in its worker on slots of their own on their targets,
+    // which each target's `prepare` provisions beside its own workers'.
+    const brought = peersBrought(selection);
+    let fitted: ReadonlyMap<string, number> = new Map();
     // A run with nothing to run (the filters left nothing, or
     // --pass-with-no-tests on an empty selection) still reports, but
     // prepares no engine and starts no app.
@@ -1011,9 +1015,12 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     // of a worker's stderr fighting the live status block.
     if (hasWork) {
       try {
-        plans = await debug.time('engine.prepare', () =>
-          prepareEngines(plans, runWorkers, engines, { runId, projectRoot: config.projectRoot, env, signal: interrupted, headed: options.headed ?? false, notice }, emit),
+        const prepared = await debug.time('engine.prepare', () =>
+          prepareEngines(plans, runWorkers, brought, engines, { runId, projectRoot: config.projectRoot, env, signal: interrupted, headed: options.headed ?? false, notice }, emit),
         );
+        plans = prepared.plans;
+        fitted = prepared.workers;
+        for (const line of prepared.notices) notice('run', line);
       } catch (cause) {
         if (!interrupted.aborted) recordFailure(cause, 'launch');
         return;
@@ -1130,6 +1137,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
             aiTrace: aiTrace !== undefined,
             step: options.beforeStep !== undefined,
             envFor: workerEnvFor(plans, env),
+            peersFor: peerSlotsFor(plans, fitted, brought, env),
           });
 
     // The list reporter shows the prompt under its test; without it, the
@@ -1258,53 +1266,87 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
 async function prepareEngines(
   plans: readonly TargetWorkPlan[],
   runWorkers: number,
+  brought: PeersBrought,
   engines: PreparedEngines,
   scope: PrepareScope,
   emit: (fact: RunEventFact) => void,
-): Promise<TargetWorkPlan[]> {
-  const prepared: TargetWorkPlan[] = [];
+): Promise<{ plans: TargetWorkPlan[]; workers: ReadonlyMap<string, number>; notices: readonly string[] }> {
+  // Each target is asked for its own workers' slots and one per peer the
+  // other workers' tests put on it, as planned: an engine that serves fewer
+  // says so, and the worker counts are fitted to every answer below.
+  const planned = new Map(plans.map((plan) => [plan.target.name, plannedSlots(plan, runWorkers)]));
+  const results = new Map<string, void | EnginePrepareResult>();
   for (const plan of plans) {
     const { target } = plan;
     const engine = target.engine;
-    if (engine?.prepare === undefined || scope.signal.aborted) {
-      prepared.push(plan);
-      continue;
-    }
+    if (engine?.prepare === undefined || scope.signal.aborted) continue;
     const step: SetupStep = { kind: 'prepare', target: target.name, engine: engine.name };
     emit({ type: 'setup', step, state: 'started' });
     const startedMs = Date.now();
-    const slots = plannedSlots(plan, runWorkers);
-    const result = await engines.prepare(target, slots, scope);
-    prepared.push(withPreparedWorkers(plan, engine.name, slots, result));
+    const { slots, peerSlots } = slotsNeeded(target.name, planned, brought);
+    const result = await engines.prepare(target, slots, scope, peerSlots);
+    results.set(target.name, checkedPrepareResult(target.name, engine.name, slots, result));
     if (!scope.signal.aborted) {
       emit({ type: 'setup', step, state: 'finished', durationMs: Date.now() - startedMs });
     }
   }
-  return prepared;
+  const served = (plan: TargetWorkPlan): number | undefined => results.get(plan.target.name)?.workers ?? plan.target.engine?.workers;
+  const { workers, notices } = fitWorkers(
+    plans.map((plan) => ({ name: plan.target.name, workers: planned.get(plan.target.name) ?? 0, served: served(plan) })),
+    brought,
+  );
+  return {
+    plans: plans.map((plan) => {
+      const result = results.get(plan.target.name);
+      const own = planned.get(plan.target.name) ?? 0;
+      const fittedWorkers = workers.get(plan.target.name) ?? 0;
+      // A target that gave workers up to peers runs what the fit left it; any other keeps the cap its engine reported.
+      const cap = fittedWorkers < Math.min(own, served(plan) ?? own) ? fittedWorkers : result?.workers;
+      return {
+        ...plan,
+        ...(cap === undefined ? {} : { workers: cap }),
+        ...(result?.env === undefined ? {} : { env: result.env }),
+      };
+    }),
+    workers,
+    notices,
+  };
 }
 
 /**
- * Applies the worker cap `prepare` reported to the plan. The engine may only
- * narrow what the run planned: a cap outside `1..slots` is an engine defect.
+ * The result of `prepare`, checked: the engine may only narrow what the run
+ * asked for, so a count outside `1..slots` is an engine defect.
  */
-function withPreparedWorkers(
-  plan: TargetWorkPlan,
-  engineName: string,
-  slots: number,
-  result: void | EnginePrepareResult,
-): TargetWorkPlan {
+function checkedPrepareResult(targetName: string, engineName: string, slots: number, result: void | EnginePrepareResult): void | EnginePrepareResult {
   const workers = result?.workers;
   if (workers !== undefined && (!Number.isSafeInteger(workers) || workers < 1 || workers > Math.max(1, slots))) {
     throw new InfrastructureError(
       'ENGINE_FAILURE',
-      `engine ${engineName} reported ${String(workers)} workers from prepare for target "${plan.target.name}"; it was asked to provision ${slots}`,
+      `engine ${engineName} reported ${String(workers)} workers from prepare for target "${targetName}"; it was asked to provision ${slots}`,
     );
   }
-  return {
-    ...plan,
-    ...(workers === undefined ? {} : { workers }),
-    ...(result?.env === undefined ? {} : { env: result.env }),
-  };
+  return result;
+}
+
+/**
+ * The slots each worker's tests' peers take, with what each peer target's
+ * `prepare` handed its own workers: the peer's engine reads its device from
+ * the same variables, under the run's own, which win on a clash.
+ */
+function peerSlotsFor(
+  plans: readonly TargetWorkPlan[],
+  workers: ReadonlyMap<string, number>,
+  brought: PeersBrought,
+  env: NodeJS.ProcessEnv,
+): (targetName: string, workerSlot: number) => Record<string, PeerSlots> {
+  const order = plans.map((plan) => plan.target.name);
+  const additions = new Map(
+    plans.map((plan) => [plan.target.name, Object.fromEntries(Object.entries(plan.env ?? {}).filter(([name]) => env[name] === undefined))]),
+  );
+  return (targetName, workerSlot) =>
+    Object.fromEntries(
+      Object.entries(peerSlotsOf(targetName, workerSlot, order, workers, brought)).map(([peer, slots]) => [peer, { ...slots, env: additions.get(peer) ?? {} }]),
+    );
 }
 
 /**
@@ -1393,28 +1435,6 @@ function toListedPair(projectRoot: string, pair: TestTargetPair): ListedPair {
  * is collected and scheduled but not opened yet, so a run that needs one is
  * refused before anything starts instead of silently leaving it out.
  */
-/** The platforms whose targets drive a device, which a peer would need one of its own of. */
-const PHONE_PLATFORMS: ReadonlySet<string> = new Set(['ios', 'android']);
-
-/**
- * Refuses, before anything starts, a run of a test with a peer on a phone
- * target: a peer needs a device of its own, and the run does not reserve one
- * for it yet, so it would take a device another worker runs on.
- */
-function refusePhonePeers(selection: Selection): void {
-  const platforms = new Map(selection.perTarget.map(({ target }) => [target.name, target.platform]));
-  for (const pair of selection.pairs) {
-    if (pair.disposition !== 'run') continue;
-    const phone = pair.options.peers.find((peer) => PHONE_PLATFORMS.has(platforms.get(peerTarget(peer, pair)) ?? ''));
-    if (phone === undefined) continue;
-    const target = peerTarget(phone, pair);
-    throw new ConfigurationError(
-      'UNSUPPORTED_CAPABILITY',
-      `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file} runs peer "${phone.name}" on target "${target}", a ${platforms.get(target)} target; this build cannot reserve a device for a peer yet, so a peer runs on a target that is not a phone only`,
-    );
-  }
-}
-
 /**
  * The selection filters the options ask for. `--last-failed` reads the
  * previous run's report here, before collection is judged, so a missing

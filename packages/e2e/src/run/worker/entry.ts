@@ -223,6 +223,7 @@ async function bootstrap(
     rerunDir: message.rerunDir,
     headed: message.headed,
     workerSlot: message.workerSlot,
+    peerSlots: message.peers,
     env: process.env,
     isolated: true,
     resolvePairs,

@@ -63,47 +63,6 @@ test('alone', { platforms: ['fake'] }, async () => {});
       project.cleanup();
     }
   });
-
-  it('refuses, before anything starts, a run of a test whose peer is on a phone target, which would need a device of its own', async () => {
-    const phone = { name: 'iphone', platform: 'ios', engine: createFakeEngine({ state: true }).engine, app: FAKE_APP };
-    const { outcome, project } = await runProject(
-      {
-        'tests/pay.e2e.ts': `import { test } from 'e2e';
-test('pays', { platforms: ['fake'], peers: { bob: {}, ava: { target: 'iphone' } } }, async () => {});
-`,
-      },
-      { config: { targets: [TARGETS[0]!, phone] } },
-    );
-    try {
-      expect(outcome.results).toEqual([]);
-      expect(outcome.exitCode).not.toBe(0);
-      expect(outcome.report.run.errors.map((error) => [error.code, error.phase, error.message])).toEqual([
-        [
-          'UNSUPPORTED_CAPABILITY',
-          'collection',
-          'test "pays" in tests/pay.e2e.ts runs peer "ava" on target "iphone", a ios target; this build cannot reserve a device for a peer yet, so a peer runs on a target that is not a phone only',
-        ],
-      ]);
-    } finally {
-      project.cleanup();
-    }
-    // A test that does not run opens no peer, so its phone peer holds nothing back.
-    const skipped = await runProject(
-      {
-        'tests/pay.e2e.ts': `import { test } from 'e2e';
-test('later', { skip: true, platforms: ['fake'], peers: { ava: { target: 'iphone' } } }, async () => {});
-test('now', { platforms: ['fake'] }, async () => {});
-`,
-      },
-      { config: { targets: [TARGETS[0]!, phone] } },
-    );
-    try {
-      expect(skipped.outcome.report.run.errors).toEqual([]);
-      expect(skipped.outcome.results.find((result) => result.test.title === 'now' && result.target.name === 'fake')?.status).toBe('passed');
-    } finally {
-      skipped.project.cleanup();
-    }
-  });
 });
 
 describe('peers on one web target', () => {
@@ -711,6 +670,185 @@ test('across', { peers: { ava: { target: 'french' } } }, async ({ app, peers }) 
   });
 });
 
+/**
+ * A config with a phone target on the fake engine whose `prepare` serves
+ * `devices` slots, a device each, and hands its workers which device every
+ * slot drives. Each `prepare` and each engine start is a line of `pool.log`.
+ */
+function poolConfig(devices: number, workers: number): string {
+  return `import type { E2EConfig } from 'e2e';
+import { appendFileSync } from 'node:fs';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+
+const log = (line: string) => appendFileSync(new URL('./pool.log', import.meta.url), line + '\\n');
+const phones = createFakeEngine({
+  prepare: (info) => {
+    if (info.slots === 0) return {};
+    log('prepare ' + JSON.stringify({ slots: info.slots, peerSlots: info.peerSlots ?? null }));
+    const bound = Math.min(info.slots, ${devices});
+    return { workers: bound, env: { FAKE_POOL: Array.from({ length: bound }, (_, slot) => 'device-' + slot).join(',') } };
+  },
+  onInit: (info) => log('init ' + JSON.stringify({ slot: info.workerSlot, device: (info.env.FAKE_POOL ?? '').split(',')[info.workerSlot] ?? null })),
+}).engine;
+
+export default {
+  targets: [
+    { name: 'fake', platform: 'fake', engine: createFakeEngine({ state: true }).engine, app: FAKE_APP },
+    { name: 'phones', platform: 'ios', engine: phones, app: FAKE_APP },
+  ],
+  workers: ${workers},
+} satisfies E2EConfig;
+`;
+}
+
+/** The lines of `pool.log` that start with `kind`, parsed. */
+function poolLines(projectDir: string, kind: 'prepare' | 'init'): Record<string, unknown>[] {
+  const file = path.join(projectDir, 'pool.log');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .trim()
+    .split('\n')
+    .filter((line) => line.startsWith(`${kind} `))
+    .map((line) => JSON.parse(line.slice(kind.length + 1)) as Record<string, unknown>);
+}
+
+describe('peers: a slot of its own on the peer target', () => {
+  /** Two files whose test holds its worker a moment, so the run's two workers are live together. */
+  const twoFiles = (options: string) =>
+    Object.fromEntries(
+      ['a', 'b'].map((name) => [
+        `tests/${name}.e2e.ts`,
+        `import { test } from 'e2e';
+test('${name}', ${options}, async () => {
+  await new Promise((resolve) => setTimeout(resolve, 400));
+});
+`,
+      ]),
+    );
+  const runPool = async (files: Readonly<Record<string, string>>, devices: number, workers: number) => {
+    const notices: string[] = [];
+    const { outcome, project } = await runProjectWithConfigFile(files, {
+      configSource: poolConfig(devices, workers),
+      runOptions: {
+        onEvent: (event) => {
+          if (event.type === 'notice' && event.target === 'run') notices.push(event.message);
+        },
+      },
+    });
+    return { outcome, project, notices };
+  };
+  const statuses = (outcome: RunOutcome, target: string) =>
+    outcome.results
+      .filter((result) => result.target.name === target)
+      .map((result) => [result.test.title, result.status, result.attempts[0]?.error?.message ?? null])
+      .toSorted();
+
+  it("asks a phone target for a slot per peer and starts each worker's peer on its own, with the device that slot was bound", async () => {
+    const { outcome, project, notices } = await runPool(twoFiles(`{ platforms: ['fake'], peers: { ava: { target: 'phones' } } }`), 2, 2);
+    try {
+      expect(statuses(outcome, 'fake')).toEqual([
+        ['a', 'passed', null],
+        ['b', 'passed', null],
+      ]);
+      // The target runs no test of its own: both slots are for the two workers' peers.
+      expect(poolLines(project.dir, 'prepare')).toEqual([{ slots: 2, peerSlots: 2 }]);
+      expect(poolLines(project.dir, 'init').toSorted((a, b) => Number(a['slot']) - Number(b['slot']))).toEqual([
+        { slot: 0, device: 'device-0' },
+        { slot: 1, device: 'device-1' },
+      ]);
+      expect(notices.filter((line) => line.includes('at a time'))).toEqual([]);
+    } finally {
+      project.cleanup();
+    }
+    // A run with no peer names no peer slot to the engine.
+    const alone = await runPool(twoFiles(`{ platforms: ['ios'] }`), 2, 2);
+    try {
+      expect(statuses(alone.outcome, 'phones')).toEqual([
+        ['a', 'passed', null],
+        ['b', 'passed', null],
+      ]);
+      expect(poolLines(alone.project.dir, 'prepare')).toEqual([{ slots: 2, peerSlots: null }]);
+    } finally {
+      alone.project.cleanup();
+    }
+  });
+
+  it("lets the run's own variable win over what the peer target's prepare handed, as for that target's own workers", async () => {
+    process.env['FAKE_POOL'] = 'from-the-run-0,from-the-run-1';
+    try {
+      const { outcome, project } = await runPool(twoFiles(`{ platforms: ['fake'], peers: { ava: { target: 'phones' } } }`), 2, 2);
+      try {
+        expect(statuses(outcome, 'fake')).toEqual([
+          ['a', 'passed', null],
+          ['b', 'passed', null],
+        ]);
+        expect(poolLines(project.dir, 'init').map((line) => line['device']).toSorted()).toEqual(['from-the-run-0', 'from-the-run-1']);
+      } finally {
+        project.cleanup();
+      }
+    } finally {
+      delete process.env['FAKE_POOL'];
+    }
+  });
+
+  it('runs fewer workers, and says so, when the phone target serves fewer slots than the workers peers need', async () => {
+    const { outcome, project, notices } = await runPool(twoFiles(`{ platforms: ['fake'], peers: { ava: { target: 'phones' } } }`), 1, 2);
+    try {
+      expect(statuses(outcome, 'fake')).toEqual([
+        ['a', 'passed', null],
+        ['b', 'passed', null],
+      ]);
+      expect(notices.filter((line) => line.includes('at a time'))).toEqual([
+        'target "fake" runs 1 worker at a time, not 2: the peers of tests take slots of their own on their targets, and an engine serves only so many at once',
+      ]);
+      // One worker ran both files, so one peer engine started, on the one device.
+      expect(poolLines(project.dir, 'init')).toEqual([{ slot: 0, device: 'device-0' }]);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("keeps a test's own user and its peer on two slots of one phone target, a worker fewer for each peer", async () => {
+    const { outcome, project, notices } = await runPool(twoFiles(`{ platforms: ['ios'], peers: { ava: {} } }`), 2, 2);
+    try {
+      expect(statuses(outcome, 'phones')).toEqual([
+        ['a', 'passed', null],
+        ['b', 'passed', null],
+      ]);
+      // Two workers with a peer each would need four devices; the two serve one worker and its peer.
+      expect(poolLines(project.dir, 'prepare')).toEqual([{ slots: 4, peerSlots: 2 }]);
+      expect(notices.filter((line) => line.includes('at a time'))).toEqual([
+        'target "phones" runs 1 worker at a time, not 2: the peers of tests take slots of their own on their targets, and an engine serves only so many at once',
+      ]);
+      const starts = poolLines(project.dir, 'init');
+      expect(starts.toSorted((a, b) => Number(a['slot']) - Number(b['slot']))).toEqual([
+        { slot: 0, device: 'device-0' },
+        { slot: 1, device: 'device-1' },
+      ]);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it('fails the run before any test when a phone target cannot serve one worker and its peer', async () => {
+    const { outcome, project } = await runPool(twoFiles(`{ platforms: ['ios'], peers: { ava: {} } }`), 1, 2);
+    try {
+      expect(outcome.results.filter((result) => result.attempts.length > 0)).toEqual([]);
+      expect(outcome.exitCode).not.toBe(0);
+      expect(outcome.report.run.errors.map((error) => [error.code, error.phase, error.message])).toEqual([
+        [
+          'ENGINE_FAILURE',
+          'launch',
+          'target "phones" serves 1 at once, and this run needs 2 of it at once with one worker per target: 1 for its own worker, 1 for the peer of one of its own tests; a peer takes a slot of its own, a device on a phone target, so give the target more, or keep the tests that put a peer on it out of this run',
+        ],
+      ]);
+      expect(poolLines(project.dir, 'init')).toEqual([]);
+    } finally {
+      project.cleanup();
+    }
+  });
+});
+
 describe('peers: the replay cache', () => {
   let app: FixtureApp;
   beforeAll(async () => {
@@ -1199,6 +1337,77 @@ export default {
       ]);
       const onFake = results.find((result) => result.target.name === 'fake')!;
       expect(onFake.attempts[0]?.error, JSON.stringify(onFake.attempts[0]?.error)).toBeUndefined();
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("hands each user's agent the tools of that user's own config load, so a tool reaches its own user's engine", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('pair', { peers: { ava: {}, bob: {} } }, async ({ agent, peers }) => {
+  await peers.ava.agent.act('say who you are');
+  await agent.act('say who you are');
+  await peers.bob.agent.act('say who you are');
+});
+`,
+      },
+      {
+        configSource: `import type { E2EConfig } from 'e2e';
+import { defineTool } from 'e2e/agent';
+import { appendFileSync } from 'node:fs';
+import { z } from 'zod';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+import { installFakeLoopModel } from '../../helpers/fake-loop-model.ts';
+
+// Every load of the config numbers itself, and builds an engine and a tool that knows which engine is its own.
+const g = globalThis as { __toolLoads?: number };
+const load = (g.__toolLoads = (g.__toolLoads ?? 0) + 1);
+let running = false;
+const engine = createFakeEngine({
+  onStartAttempt: () => { running = true; },
+  onEndAttempt: () => { running = false; },
+}).engine;
+const whoami = defineTool(
+  {
+    description: 'Says which load of the config built this tool, and whether its engine has an attempt running',
+    inputSchema: z.object({}),
+    execute: async () => {
+      appendFileSync(new URL('./tools.log', import.meta.url), process.pid + ' load ' + load + ' running ' + running + '\\n');
+      return 'load ' + load;
+    },
+  },
+  { mutates: false },
+);
+const model = installFakeLoopModel((call) =>
+  call.lastToolResult.startsWith('load ')
+    ? [{ toolName: 'complete_step', input: { status: 'passed', summary: call.lastToolResult } }]
+    : [{ toolName: 'whoami', input: {} }],
+);
+
+export default {
+  targets: [{ name: 'fake', platform: 'fake', engine, app: FAKE_APP }],
+  workers: 1,
+  cache: 'off',
+  agents: { default: { model, tools: { whoami } } },
+} satisfies E2EConfig;
+`,
+      },
+    );
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'pair');
+      expect(result.status, why).toBe('passed');
+      const calls = readFileSync(path.join(project.dir, 'tools.log'), 'utf8').trim().split('\n').map((line) => line.split(' '));
+      // One worker made every call; each came from a different load, whose own engine was running.
+      expect(new Set(calls.map(([pid]) => pid)).size).toBe(1);
+      expect(calls.map((call) => call.slice(3).join(' '))).toEqual(['running true', 'running true', 'running true']);
+      const loads = calls.map((call) => call[2]);
+      expect(new Set(loads).size).toBe(3);
+      // The step's own summary is what its own tool answered.
+      const acts = attempt.steps.filter((step) => step.api === 'agent.act');
+      expect(acts.map((step) => step.user ?? null)).toEqual(['ava', null, 'bob']);
+      expect(acts.map((step) => step.explanation)).toEqual(loads.map((load) => `load ${load}`));
     } finally {
       project.cleanup();
     }

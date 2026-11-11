@@ -417,14 +417,23 @@ export interface EnginePrepareInfo {
   /** The app the target declares, as `init` receives it: what a device installs or warms up here. */
   readonly app: EngineAppInfo;
   /**
-   * The worker slots the run will start for this target, `0` to `slots - 1`:
-   * the run's worker cap, the engine's declared `workers`, and the work units
-   * selected for the target, whichever is smallest; `0` when nothing runs on
-   * it while another target has work. A run with nothing to run prepares no
+   * The slots the run will use on this target, `0` to `slots - 1`: one per
+   * worker it starts for the target (the run's worker cap, the engine's
+   * declared `workers`, and the work units selected for the target, whichever
+   * is smallest), then one per peer (`peerSlots`); `0` when nothing runs on it
+   * while another target has work. A run with nothing to run prepares no
    * target. Provision for exactly these slots (boot that many devices of a
    * pool); `init` then finds them ready.
    */
   readonly slots: number;
+  /**
+   * How many of `slots` are for peers: a test's other users (its `peers`
+   * option), each on an engine instance of its own inside the worker that
+   * runs the test, on a slot no worker of this target holds. Absent in a run
+   * that puts no peer on the target. An engine that cannot serve a peer
+   * refuses here, before it acquires anything.
+   */
+  readonly peerSlots?: number;
   /**
    * The run's environment: what every worker is started with. A host may hand
    * the run an environment other than the runner process's own, so anything
@@ -521,7 +530,10 @@ export interface EngineInitInfo {
    * This worker's 0-based slot among the target's workers: the lowest slot
    * free when the worker was spawned, so a replacement worker takes over the
    * slot of the one that exited. An engine with several devices hands each
-   * slot its own; `config.workers` bounds the slots a target can reach.
+   * slot its own; `config.workers` bounds the slots a target can reach. An
+   * instance that runs a peer of another worker's test gets one of the
+   * slots `prepare` was asked for beyond the target's own workers
+   * (`EnginePrepareInfo.peerSlots`), which no worker and no other peer holds.
    */
   readonly workerSlot: number;
   /** Aborts on interrupt and when init exceeds the launch timeout; init must stop promptly. */

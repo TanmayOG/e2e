@@ -33,6 +33,7 @@ import { createAgentCacheContext, settleStagedTraces, type AgentCacheContext } f
 import { storedRecordingsFor, type StoredRecordings } from '../cache/rekeyed.ts';
 import type { ModuleRegistration, RegisteredTest } from '../collect/registry.ts';
 import { pairRecordings, peerTarget, type TestTargetPair } from '../collect/select.ts';
+import { reservedPeerSlot, type PeerSlots } from './peer-slots.ts';
 import { keeps, type AttemptRecordings, type VideoRecording } from '../internal/recording-modes.ts';
 import type { ArtifactStore, PeerFixtures, Secret } from '../types.ts';
 import { attemptSegments, createAttemptArtifacts, resultSegment } from './artifacts.ts';
@@ -121,6 +122,8 @@ export interface TargetExecutorOptions {
   readonly headed: boolean;
   /** This worker's slot among the target's workers; see `EngineInitInfo.workerSlot`. */
   readonly workerSlot: number;
+  /** The slots the run reserved for this worker's tests' peers, by peer target; see `WorkerBootstrap.peers`. */
+  readonly peerSlots?: Readonly<Record<string, PeerSlots>> | undefined;
   /** This worker's environment; see `EngineInitInfo.env`. */
   readonly env: Readonly<Record<string, string | undefined>>;
   /**
@@ -450,12 +453,12 @@ export class TargetExecutor implements SerialHost {
     const key = `${targetName}\u0000${String(index)}`;
     const existing = this.peerExecutors.get(key);
     if (existing !== undefined) return existing;
-    const pending = this.loadPeerExecutor(pair, targetName);
+    const pending = this.loadPeerExecutor(pair, targetName, index);
     this.peerExecutors.set(key, pending);
     return pending;
   }
 
-  private async loadPeerExecutor(pair: TestTargetPair, targetName: string): Promise<TargetExecutor> {
+  private async loadPeerExecutor(pair: TestTargetPair, targetName: string, index: number): Promise<TargetExecutor> {
     const named = `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file}`;
     const load = this.options.loadPeerConfig;
     if (load === undefined) {
@@ -464,6 +467,8 @@ export class TargetExecutor implements SerialHost {
         `${named} declares peers, which need a run from a config file: a run given a config value, or of tests registered in memory, has no file to load a second engine from`,
       );
     }
+    // The peer runs on a slot of its target the run set aside for it: its own device, on a phone.
+    const reserved = reservedPeerSlot(this.options.peerSlots, targetName, index, named);
     const config = await load();
     // The load matched the runner's config digest, so it declares every target selection checked.
     const target = config.targets.find((candidate) => candidate.name === targetName)!;
@@ -486,8 +491,9 @@ export class TargetExecutor implements SerialHost {
       rerunDir: this.rerunDir,
       sessionStore: this.options.sessionStore,
       headed: this.options.headed,
-      workerSlot: this.options.workerSlot,
-      env: this.options.env,
+      workerSlot: reserved.slot,
+      // What the peer target's `prepare` handed its workers, such as which device each slot drives.
+      env: { ...this.options.env, ...reserved.env },
       isolated: this.options.isolated,
       interruptSignal: this.interruptSignal,
       debug: this.debug,
