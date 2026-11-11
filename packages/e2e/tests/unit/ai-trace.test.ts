@@ -144,7 +144,7 @@ describe('AiTraceRecorder', () => {
     const recorder = new AiTraceRecorder();
     await withAiTraceScope(SCOPE, async () => {
       await withAiTraceStep('agent.act', 'send the invite', () => generation(recorder, 'mine'));
-      await withAiTraceStep('agent.act', 'accept the invite', () => generation(recorder, 'hers'), 'ava');
+      await withAiTraceStep('agent.act', 'accept the invite', () => generation(recorder, 'hers'), { name: 'ava', agent: 'default', target: 'web' });
     });
     const runs = recorder.drain().runs;
     expect(runs.map((run) => run.function_id)).toEqual([
@@ -152,7 +152,29 @@ describe('AiTraceRecorder', () => {
       'todos › adds one · peer ava · agent.act "accept the invite"',
     ]);
     expect(runs[0]!.e2e).toEqual({ ...SCOPE, api: 'agent.act', label: 'send the invite' });
-    expect(runs[1]!.e2e).toEqual({ ...SCOPE, api: 'agent.act', label: 'accept the invite', user: 'ava' });
+    expect(runs[1]!.e2e).toEqual({ ...SCOPE, api: 'agent.act', label: 'accept the invite', user: 'ava', userAgent: 'default', userTarget: 'web' });
+  });
+
+  it("names the agent a peer runs as, beside the test's own, and records the peer's agent and target in its scope", async () => {
+    const recorder = new AiTraceRecorder();
+    const steps = new StepRecorder('attempt');
+    await withAiTraceScope({ ...SCOPE, agent: 'admin' }, async () => {
+      await steps.run('agent', 'agent.act', 'send the invite', () => generation(recorder, 'mine'));
+      await steps.forUser('ava', { agent: 'guest', target: 'phone' }).run('agent', 'agent.act', 'accept the invite', () => generation(recorder, 'hers'));
+      await steps.forUser('bob', { agent: 'admin', target: 'web' }).run('agent', 'agent.act', 'decline the invite', () => generation(recorder, 'his'));
+    });
+    const runs = recorder.drain().runs;
+    // The test's own agent still names the pair, so two pairs of a persona sweep stay apart.
+    expect(runs.map((run) => run.function_id)).toEqual([
+      'todos › adds one · as admin · agent.act "send the invite"',
+      'todos › adds one · as admin · peer ava as guest · agent.act "accept the invite"',
+      'todos › adds one · as admin · peer bob · agent.act "decline the invite"',
+    ]);
+    expect(runs.map((run) => [run.e2e?.agent, run.e2e?.target, run.e2e?.user ?? null, run.e2e?.userAgent ?? null, run.e2e?.userTarget ?? null])).toEqual([
+      ['admin', 'web', null, null, null],
+      ['admin', 'web', 'ava', 'guest', 'phone'],
+      ['admin', 'web', 'bob', 'admin', 'web'],
+    ]);
   });
 
   it("attributes a peer's recorded step to the peer", async () => {
@@ -160,7 +182,7 @@ describe('AiTraceRecorder', () => {
     const steps = new StepRecorder('attempt');
     await withAiTraceScope(SCOPE, async () => {
       await steps.run('agent', 'agent.act', 'send the invite', () => generation(recorder, 'mine'));
-      await steps.forUser('ava').run('agent', 'agent.act', 'accept the invite', () => generation(recorder, 'hers'));
+      await steps.forUser('ava', { agent: 'default', target: 'web' }).run('agent', 'agent.act', 'accept the invite', () => generation(recorder, 'hers'));
     });
     expect(recorder.drain().runs.map((run) => run.e2e?.user)).toEqual([undefined, 'ava']);
   });

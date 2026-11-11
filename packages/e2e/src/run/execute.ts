@@ -1324,11 +1324,12 @@ export class TargetExecutor implements SerialHost {
       const peerFixtures = Object.fromEntries(
         openPeers.map((open) => {
           const declared = pair.options.peers.find((peer) => peer.name === open.name)!;
+          const peerAgent = declared.agent ?? pair.agent;
           const peerCache = inMemory === undefined ? open.executor.peerCache(pair.test.id, attemptIndex, open.name) : undefined;
           if (peerCache !== undefined) peerCaches.set(open.name, peerCache);
           const fixturesOfPeer = open.executor.peerFixtures({
             session: open.session,
-            steps: steps.forUser(open.name),
+            steps: steps.forUser(open.name, { agent: peerAgent, target: open.executor.target.name }),
             budget,
             runId: this.options.runId,
             attemptId,
@@ -1336,7 +1337,7 @@ export class TargetExecutor implements SerialHost {
             artifacts: open.sink,
             priorSteps: () => steps.completed().filter((step) => step.user === open.name),
             agentContext: declared.agentContext,
-            agent: declared.agent ?? pair.agent,
+            agent: peerAgent,
             test: { file: pair.test.file, titlePath: pair.test.titlePath, user: open.name },
             ...(peerCache === undefined ? {} : { cache: peerCache }),
           });

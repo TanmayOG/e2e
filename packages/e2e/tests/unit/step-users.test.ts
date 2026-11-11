@@ -9,6 +9,9 @@ import { describe, expect, it } from 'vitest';
 import type { AppEvent } from '../../src/engine/surface.ts';
 import { StepRecorder, type StepHoldRequest, type StepProgress } from '../../src/run/steps.ts';
 
+/** The agent and target peer ava's steps are attributed to. */
+const AVA = { agent: 'default', target: 'web' };
+
 const pass = async (): Promise<void> => undefined;
 const log = (text: string): AppEvent => ({ kind: 'log', entry: { source: 'console', level: 'warning', text } });
 /** A screen of one line, as `recordScreen` reads it. */
@@ -18,7 +21,7 @@ describe('StepRecorder.forUser', () => {
   it("marks each step a peer opens, and the steps inside it, as the peer's, and the test's own as no one's", async () => {
     const heard: StepProgress[] = [];
     const steps = new StepRecorder('attempt', { onProgress: (progress) => heard.push(progress) });
-    const ava = steps.forUser('ava');
+    const ava = steps.forUser('ava', AVA);
     await steps.run('app', 'app.open', '/', pass);
     await ava.run('agent', 'agent.act', 'accept the invite', async () => {
       await steps.run('locator', 'locator.tap', 'button "Accept"', async () => {
@@ -48,7 +51,7 @@ describe('StepRecorder.forUser', () => {
 
   it("lists only the peer's own finished steps", async () => {
     const steps = new StepRecorder('attempt');
-    const ava = steps.forUser('ava');
+    const ava = steps.forUser('ava', AVA);
     await steps.run('app', 'app.open', '/', pass);
     await ava.run('app', 'app.open', '/invites', pass);
     expect(ava.completed().map((step) => step.label)).toEqual(['/invites']);
@@ -57,7 +60,7 @@ describe('StepRecorder.forUser', () => {
 
   it("files what a peer's app reports between steps with that peer's last step, and its first navigation with its first step", async () => {
     const steps = new StepRecorder('attempt');
-    const ava = steps.forUser('ava');
+    const ava = steps.forUser('ava', AVA);
     steps.recordAppEvent({ kind: 'navigation', line: 'ava went to /invites' }, '2026-01-01T00:00:00.000Z', 'ava');
     await ava.run('app', 'app.open', '/invites', pass);
     await steps.run('app', 'app.open', '/', pass);
@@ -75,7 +78,7 @@ describe('StepRecorder.forUser', () => {
 
   it("files what a peer's app reports while the test's own step runs with the peer's last step, not the running one", async () => {
     const steps = new StepRecorder('attempt');
-    await steps.forUser('ava').run('app', 'app.open', '/invites', pass);
+    await steps.forUser('ava', AVA).run('app', 'app.open', '/invites', pass);
     await steps.run('app', 'app.open', '/', async () => {
       steps.recordAppEvent(log('invite link expires soon'), '2026-01-01T00:00:01.000Z', 'ava');
       steps.recordAppEvent({ kind: 'navigation', line: 'ava went to /invites/1' }, '2026-01-01T00:00:01.000Z', 'ava');
@@ -90,7 +93,7 @@ describe('StepRecorder.forUser', () => {
 
   it("compares each step's screen with the last one its own user saw", async () => {
     const steps = new StepRecorder('attempt');
-    const ava = steps.forUser('ava');
+    const ava = steps.forUser('ava', AVA);
     await steps.run('app', 'app.open', '/', async () => steps.recordScreen(screen('document "Cart"')));
     await ava.run('app', 'app.open', '/invites', async () => steps.recordScreen(screen('document "Invites"')));
     await steps.run('app', 'app.reload', '/', async () => steps.recordScreen(screen('document "Cart"')));
@@ -105,7 +108,7 @@ describe('StepRecorder.forUser', () => {
 
   it("confirms by a passed check only that check's own user's steps", async () => {
     const steps = new StepRecorder('attempt');
-    const ava = steps.forUser('ava');
+    const ava = steps.forUser('ava', AVA);
     await ava.run('agent', 'agent.act', 'accept the invite', pass);
     await steps.run('agent', 'agent.act', 'send the invite', pass);
     await steps.run('assertion', 'expect.toBeVisible', 'sent', pass, { verifies: true });
@@ -119,7 +122,7 @@ describe('StepRecorder.forUser', () => {
 
   it("attaches a file made outside any step to the last step of the user whose app made it", async () => {
     const steps = new StepRecorder('attempt');
-    const ava = steps.forUser('ava');
+    const ava = steps.forUser('ava', AVA);
     await ava.run('app', 'app.open', '/invites', pass);
     await steps.run('app', 'app.open', '/', pass);
     ava.attachArtifact('her-video');
@@ -132,7 +135,7 @@ describe('StepRecorder.forUser', () => {
     const steps = new StepRecorder('attempt', { hold: async (step) => void held.push(step) });
     steps.holdable = true;
     await steps.run('app', 'app.open', '/', pass);
-    await steps.forUser('ava').run('app', 'app.open', '/invites', pass);
+    await steps.forUser('ava', AVA).run('app', 'app.open', '/invites', pass);
     expect(held.map((step) => [step.label, step.user])).toEqual([
       ['/', undefined],
       ['/invites', 'ava'],

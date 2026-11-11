@@ -1696,6 +1696,51 @@ export default {
     }
   });
 
+  it("names each peer's model calls in the AI trace with the agent the peer runs as and its app's target", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('pair', { platforms: ['fake'], agent: 'admin', peers: { ava: { agent: 'guest', target: 'phone' } } }, async ({ agent, peers }) => {
+  await agent.act('send the invite');
+  await peers.ava.agent.act('accept the invite');
+});
+`,
+      },
+      {
+        configSource: `import type { E2EConfig } from 'e2e';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+import { installFakeLoopModel } from '../../helpers/fake-loop-model.ts';
+
+const model = installFakeLoopModel(() => [{ toolName: 'complete_step', input: { status: 'passed', summary: 'done' } }]);
+
+export default {
+  targets: [
+    { name: 'fake', platform: 'fake', engine: createFakeEngine().engine, app: FAKE_APP },
+    { name: 'phone', platform: 'phone', engine: createFakeEngine().engine, app: FAKE_APP },
+  ],
+  workers: 1,
+  cache: 'off',
+  agents: { default: { model }, admin: { model }, guest: { model } },
+} satisfies E2EConfig;
+`,
+        runOptions: { aiTrace: true },
+      },
+    );
+    try {
+      const result = outcome.results.find((entry) => entry.test.title === 'pair' && entry.target.name === 'fake')!;
+      expect(result.status, JSON.stringify(result.attempts.map((attempt) => attempt.error))).toBe('passed');
+      const trace = JSON.parse(readFileSync(path.join(project.dir, '.e2e', 'ai-trace.json'), 'utf8')) as {
+        runs: { function_id: string; e2e?: Record<string, unknown> }[];
+      };
+      expect(trace.runs.map((run) => [run.function_id, run.e2e?.['agent'], run.e2e?.['target'], run.e2e?.['userAgent'] ?? null, run.e2e?.['userTarget'] ?? null])).toEqual([
+        ['pair · as admin · agent.act "send the invite"', 'admin', 'fake', null, null],
+        ['pair · as admin · peer ava as guest · agent.act "accept the invite"', 'admin', 'fake', 'guest', 'phone'],
+      ]);
+    } finally {
+      project.cleanup();
+    }
+  });
+
   it('refuses a second user on an engine object another user in the worker already runs on, whichever target names it', async () => {
     const { outcome, project } = await runProjectWithConfigFile(
       {
