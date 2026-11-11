@@ -505,7 +505,7 @@ each peer gets and the limits.
 | --- | --- |
 | `COLLECTION_ERROR` | A name or field that breaks the rules above, an unknown `target` or `agent`, a `target` the run does not select, a `session` no setup test saves, a `session` on a target that cannot restore one, `peers` on or inside a serial group or on a setup test, or a peer target whose engine runs in an engine server. |
 | `SESSION_TEST_UNSUPPORTED` | `e2e mcp`'s `open_session` names the test: a session drives one app. |
-| `UNSUPPORTED_CAPABILITY` | Before any test, the peer's target leases its browsers or devices from a provider, or attaches to a browser over CDP. At launch, the run has no config file to load the peer's engine from: a config value or tests registered in memory. |
+| `UNSUPPORTED_CAPABILITY` | Before any test, the peer's target leases its browsers or devices from a provider, or attaches to a browser over CDP, or the run has no config file to load the peer's engine from: a config value or tests registered in memory. |
 | `INVALID_CONFIG` | At launch, the peer's engine is the same object as another user's in the worker, as an engine made inside a package is. In the body, `peers.<name>` names a peer the test does not declare. |
 | `ENGINE_FAILURE` | Before any test, a target cannot serve one worker and the peers its tests bring to it. |
 

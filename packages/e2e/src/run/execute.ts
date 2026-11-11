@@ -149,8 +149,8 @@ export interface TargetExecutorOptions {
    * Loads the config afresh in this process, for the engines a test's peers
    * run on: every load evaluates the config and the project files it imports
    * again, so its engines are its own. Undefined where the run loaded no
-   * config file (a config value, tests registered in memory), so a test
-   * there cannot have peers.
+   * config file (a config value, tests registered in memory), which the
+   * runner refuses peers in before any engine prepares.
    */
   readonly loadPeerConfig?: (() => Promise<ResolvedConfig>) | undefined;
 }
@@ -460,16 +460,10 @@ export class TargetExecutor implements SerialHost {
 
   private async loadPeerExecutor(pair: TestTargetPair, targetName: string, index: number): Promise<TargetExecutor> {
     const named = `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file}`;
-    const load = this.options.loadPeerConfig;
-    if (load === undefined) {
-      throw new ConfigurationError(
-        'UNSUPPORTED_CAPABILITY',
-        `${named} declares peers, which need a run from a config file: a run given a config value, or of tests registered in memory, has no file to load a second engine from`,
-      );
-    }
     // The peer runs on a slot of its target the run set aside for it: its own device, on a phone.
     const reserved = reservedPeerSlot(this.options.peerSlots, targetName, index, named);
-    const config = await load();
+    // The runner refuses peers in a run with no config file, so a worker that runs one has the file to load.
+    const config = await this.options.loadPeerConfig!();
     // The load matched the runner's config digest, so it declares every target selection checked.
     const target = config.targets.find((candidate) => candidate.name === targetName)!;
     // An engine made inside a package is one object every load of the config

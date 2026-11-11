@@ -1743,18 +1743,41 @@ export default {
     }
   });
 
-  it('refuses peers in a run that loaded no config file, which has nowhere to load a second engine from', async () => {
+  it('refuses peers in a run that loaded no config file before any engine prepares, which has nowhere to load a second engine from', async () => {
+    const prepared: (number | null)[] = [];
+    const engine = createFakeEngine({ state: true, prepare: (info) => void prepared.push(info.peerSlots ?? null) }).engine;
     const { outcome, project } = await runProject(
       { 'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('pair', { peers: { ava: {} } }, async () => {});\n` },
-      { config: { targets: TARGETS.slice(0, 1) } },
+      { config: { targets: [{ name: 'fake', platform: 'fake', engine, app: FAKE_APP }] } },
     );
     try {
-      const { result, attempt, why } = onlyAttempt(outcome, 'pair');
-      expect(result.status, why).toBe('failed');
-      expect(attempt.error).toMatchObject({ code: 'UNSUPPORTED_CAPABILITY', phase: 'launch' });
-      expect(attempt.error?.message).toContain('declares peers, which need a run from a config file');
+      expect(outcome.exitCode).toBe(2);
+      expect(outcome.results.filter((result) => result.attempts.length > 0)).toEqual([]);
+      expect(outcome.report.run.errors.map((error) => [error.code, error.phase, error.message])).toEqual([
+        [
+          'UNSUPPORTED_CAPABILITY',
+          'collection',
+          'test "pair" in tests/pair.e2e.ts declares peers, which need a run from a config file: a run given a config value, or of tests registered in memory, has no file to load a second engine from',
+        ],
+      ]);
+      // No engine set a slot aside, or booted a device, for a peer that never runs.
+      expect(prepared).toEqual([]);
     } finally {
       project.cleanup();
+    }
+    // A test with peers that does not run leaves the run alone.
+    const skipped = await runProject(
+      { 'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('pair', { peers: { ava: {} }, skip: true }, async () => {});\ntest('alone', async () => {});\n` },
+      { config: { targets: [{ name: 'fake', platform: 'fake', engine, app: FAKE_APP }] } },
+    );
+    try {
+      expect(skipped.outcome.report.run.errors).toEqual([]);
+      expect(skipped.outcome.results.map((result) => [result.test.title, result.status]).toSorted()).toEqual([
+        ['alone', 'passed'],
+        ['pair', 'skipped'],
+      ]);
+    } finally {
+      skipped.project.cleanup();
     }
   });
 });

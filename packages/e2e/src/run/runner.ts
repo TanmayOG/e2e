@@ -994,6 +994,20 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     const workerConfigPath = options.tests === undefined ? config.configPath : undefined;
     const inProcess = workerConfigPath === undefined;
     const runWorkers = inProcess ? 1 : config.workers;
+    // A peer's engine comes from a second load of the config file in the
+    // worker, so a run with no file to load refuses peers here, before any
+    // engine sets a slot aside, or boots a device, for one.
+    const peered = inProcess ? selection.pairs.find((pair) => pair.disposition === 'run' && pair.options.peers.length > 0) : undefined;
+    if (peered !== undefined) {
+      recordFailure(
+        new ConfigurationError(
+          'UNSUPPORTED_CAPABILITY',
+          `test "${peered.test.titlePath.join(' > ')}" in ${peered.test.file} declares peers, which need a run from a config file: a run given a config value, or of tests registered in memory, has no file to load a second engine from`,
+        ),
+        'collection',
+      );
+      return;
+    }
     // Starting long files early only pays when other workers take the rest, so only such a run reads the timings history.
     const previous = runWorkers > 1 ? await loadTimings(timingsPath(config), outputLayout(config.output).report) : undefined;
     plans = orderWorkPlans(plans, {
