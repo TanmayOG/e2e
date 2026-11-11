@@ -428,6 +428,10 @@ function readProvenance(document: unknown): TraceProvenance | undefined {
   if (raw['agent'] !== undefined && agent === undefined) return undefined;
   const user = raw['user'] === undefined ? undefined : readBoundedText(raw['user'], MAX_TRACE_DESCRIPTOR_CHARS);
   if (raw['user'] !== undefined && user === undefined) return undefined;
+  const ownerTargetId = raw['ownerTargetId'] === undefined ? undefined : readBoundedText(raw['ownerTargetId'], MAX_TRACE_DESCRIPTOR_CHARS);
+  if (raw['ownerTargetId'] !== undefined && ownerTargetId === undefined) return undefined;
+  const ownerAgent = raw['ownerAgent'] === undefined ? undefined : readBoundedText(raw['ownerAgent'], MAX_TRACE_DESCRIPTOR_CHARS);
+  if (raw['ownerAgent'] !== undefined && ownerAgent === undefined) return undefined;
   return {
     testId,
     targetId,
@@ -436,6 +440,8 @@ function readProvenance(document: unknown): TraceProvenance | undefined {
     ...(callIndex === undefined ? {} : { callIndex }),
     ...(agent === undefined ? {} : { agent }),
     ...(user === undefined ? {} : { user }),
+    ...(ownerTargetId === undefined ? {} : { ownerTargetId }),
+    ...(ownerAgent === undefined ? {} : { ownerAgent }),
   };
 }
 

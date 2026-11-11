@@ -48,8 +48,8 @@ const conclusion = {
 };
 
 describe('TraceRecorder', () => {
-  it("records the peer a recording is for, and reads it back from the stored entry; the test's own user's names none", () => {
-    for (const recordedFor of [{ ...conclusion.recordedFor, user: 'ava' }, conclusion.recordedFor]) {
+  it("records the peer a recording is for, with the test's own target and agent, and reads them back from the stored entry; the test's own user's names none", () => {
+    for (const recordedFor of [{ ...conclusion.recordedFor, user: 'ava', ownerTargetId: 'ios', ownerAgent: 'admin' }, conclusion.recordedFor]) {
       const recorder = makeRecorder();
       recorder.record({ name: 'tap', node: upgradeButton });
       const trace = recorder.finalize({ ...conclusion, recordedFor });
@@ -57,8 +57,10 @@ describe('TraceRecorder', () => {
       const stored = readTraceEntry(JSON.parse(JSON.stringify(buildTraceEntry(trace!))));
       expect(stored?.payload.recordedFor).toEqual(recordedFor);
     }
-    const unreadable = buildTraceEntry(makeRecorderTrace({ ...conclusion.recordedFor, user: 'x'.repeat(301) }));
-    expect(readTraceEntry(JSON.parse(JSON.stringify(unreadable)))).toBeUndefined();
+    for (const oversized of [{ user: 'x'.repeat(301) }, { user: 'ava', ownerTargetId: 'x'.repeat(301), ownerAgent: 'admin' }, { user: 'ava', ownerTargetId: 'ios', ownerAgent: 'x'.repeat(301) }]) {
+      const unreadable = buildTraceEntry(makeRecorderTrace({ ...conclusion.recordedFor, ...oversized }));
+      expect(readTraceEntry(JSON.parse(JSON.stringify(unreadable))), JSON.stringify(Object.keys(oversized))).toBeUndefined();
+    }
   });
 
   it.each(['provider', 'model'] as const)('omits an oversized recorded %s', (field) => {

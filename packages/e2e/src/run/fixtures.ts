@@ -15,7 +15,7 @@ import type { DebugTrace } from '../internal/debug.ts';
 import { ConfigurationError, errorMessage, InfrastructureError, TestError } from '../internal/errors.ts';
 import { Deadline } from '../internal/time.ts';
 import { didYouMean } from '../internal/suggest.ts';
-import { createScreenshotContext, type ScreenshotContext, type WrittenScreenshots } from './screenshots.ts';
+import { createScreenshotContext, type ScreenshotContext, type ScreenshotUser, type WrittenScreenshots } from './screenshots.ts';
 import { sessionRecordings } from './recordings.ts';
 import { resolveSecretValue, sessionLedger } from './secrecy.ts';
 import { baseUrlOf, resolveNavigationUrl } from '../internal/urls.ts';
@@ -91,7 +91,7 @@ export interface AttemptEnvironment {
     readonly file: string;
     readonly titlePath: readonly string[];
     readonly writtenScreenshots: WrittenScreenshots;
-    readonly user?: string;
+    readonly user?: ScreenshotUser;
   };
   /** The fixtures of each peer the test declares, by name, already over their own apps; absent for a peer's own graph. */
   readonly peers?: Readonly<Record<string, PeerFixtures>>;

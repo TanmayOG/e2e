@@ -319,8 +319,8 @@ engine's fixtures, such as `browser` or `device`. A peer opens before
   enough for one worker and its peers, the run stops before any test.
 - **Its own records.** The report, the trace page, and the terminal name the
   peer on each of its steps. Its files go in `peers/<name>/`, its replay
-  recordings and screenshot baselines are its own, and its agent sees only
-  its own earlier steps.
+  recordings and screenshot baselines are its own in each target and agent
+  the test runs on, and its agent sees only its own earlier steps.
 - **One set of secrets.** A secret either user types is redacted from what
   every user's agent reads, and from every record of the attempt.
 

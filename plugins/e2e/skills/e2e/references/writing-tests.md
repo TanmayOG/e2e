@@ -490,8 +490,9 @@ test('Ava sees the payment', { session: 'member', peers: { ava: { session: 'ava'
 - A device peer takes a device of its own; with too few, the run starts
   fewer workers, and with none to spare for a peer it stops before any test.
 - Each peer's steps carry `user` in the report, its files go in
-  `peers/<name>/`, its replay recordings and screenshot baselines are its own,
-  and its agent sees only its own earlier steps. One secret ledger covers
+  `peers/<name>/`, its replay recordings and screenshot baselines are its own
+  in each target and agent the test runs on, and its agent sees only its own
+  earlier steps. One secret ledger covers
   every user.
 - Not in a serial group, a setup test, `open_session`, on an engine-server
   target, a hosted browser or device provider, or a CDP attach. The peer's

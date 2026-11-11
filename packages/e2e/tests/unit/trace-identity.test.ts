@@ -97,14 +97,19 @@ describe('traceCacheKeyHash', () => {
     expect(traceCacheKeyHash(buildTraceCacheKey(withParams))).toBe('400b6e2625b0feb2483a87adcd90ab7ddb03a83ef47ed5409e57680cbb1d0caf');
   });
 
-  it("keys a peer's step on the peer's name too, and leaves the test's own user's key as it was", () => {
+  it("keys a peer's step on the peer's name, and the test's own target and agent, and leaves the test's own user's key as it was", () => {
     const mine = buildTraceCacheKey(parts);
-    expect(Object.hasOwn(mine, 'user')).toBe(false);
+    for (const field of ['user', 'ownerTargetId', 'ownerAgent']) expect(Object.hasOwn(mine, field)).toBe(false);
     expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: undefined }))).toBe(traceCacheKeyHash(mine));
-    const ava = traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: 'ava' }));
+    const peer = { name: 'ava', ownerTargetId: 'web', ownerAgent: 'admin' };
+    expect(buildTraceCacheKey({ ...parts, user: peer })).toMatchObject({ user: 'ava', ownerTargetId: 'web', ownerAgent: 'admin' });
+    const ava = traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: peer }));
     expect(ava).not.toBe(traceCacheKeyHash(mine));
-    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: 'bob' }))).not.toBe(ava);
-    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: 'ava' }))).toBe(ava);
+    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: { ...peer, name: 'bob' } }))).not.toBe(ava);
+    // Two pairs of one test, on two targets or as two agents, each key their peer's steps apart.
+    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: { ...peer, ownerTargetId: 'ios' } }))).not.toBe(ava);
+    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: { ...peer, ownerAgent: 'member' } }))).not.toBe(ava);
+    expect(traceCacheKeyHash(buildTraceCacheKey({ ...parts, user: { ...peer } }))).toBe(ava);
   });
 
   it('keys the agent context by digest, never by its text', () => {

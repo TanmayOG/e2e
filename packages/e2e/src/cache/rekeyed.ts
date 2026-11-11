@@ -87,8 +87,13 @@ export function storedRecordingsFor(cache: ResolvedCacheConfig): StoredRecording
 
 /** The whole step as one map key, or undefined when the provenance does not record all of it. */
 function stepKey(step: TraceProvenance): string | undefined {
-  const { testId, targetId, instructionDigest, paramsDigest, callIndex, agent, user } = step;
+  const { testId, targetId, instructionDigest, paramsDigest, callIndex, agent, user, ownerTargetId, ownerAgent } = step;
   if (paramsDigest === undefined || callIndex === undefined || agent === undefined) return undefined;
-  // A peer's step is its own: the test's user's recording of the same step never stands in for it.
-  return JSON.stringify(user === undefined ? [testId, targetId, instructionDigest, paramsDigest, callIndex, agent] : [testId, targetId, instructionDigest, paramsDigest, callIndex, agent, user]);
+  // A peer's step is its own, in its own pair of the test: neither the test's user's recording of the same step,
+  // nor the peer's in a pair on another target or as another agent, stands in for it.
+  return JSON.stringify(
+    user === undefined
+      ? [testId, targetId, instructionDigest, paramsDigest, callIndex, agent]
+      : [testId, targetId, instructionDigest, paramsDigest, callIndex, agent, user, ownerTargetId, ownerAgent],
+  );
 }

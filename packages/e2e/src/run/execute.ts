@@ -30,6 +30,7 @@ import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import { engineAppInfo } from '../config/app.ts';
 import { Deadline, NEVER_ABORTS, withAbort, withScopedBudget, withTimeout } from '../internal/time.ts';
 import { createAgentCacheContext, settleStagedTraces, type AgentCacheContext } from '../cache/context.ts';
+import type { CachePeerIdentity } from '../cache/identity.ts';
 import { storedRecordingsFor, type StoredRecordings } from '../cache/rekeyed.ts';
 import type { ModuleRegistration, RegisteredTest } from '../collect/registry.ts';
 import { pairRecordings, peerTarget, type TestTargetPair } from '../collect/select.ts';
@@ -42,7 +43,7 @@ import { createEngineSession } from '../engine/session.ts';
 import { createExtendedFixtures } from './extended-fixtures.ts';
 import { captureFailureEvidence } from './failure-evidence.ts';
 import { createFixtures, type ArtifactSink, type AttemptEnvironment } from './fixtures.ts';
-import { WrittenScreenshots } from './screenshots.ts';
+import { WrittenScreenshots, type ScreenshotUser } from './screenshots.ts';
 import { publishAttempt } from '../expect/attempt.ts';
 import { PollScope, runInPollScope } from '../expect/poll-scope.ts';
 import { SoftFailures } from '../expect/soft.ts';
@@ -165,7 +166,7 @@ interface OpenPeer {
 
 /** What a peer's fixtures are built from in the test's attempt; the peer's executor adds its own config, target, engine, and models. */
 export type PeerAttemptEnvironment = Omit<AttemptEnvironment, 'config' | 'target' | 'models' | 'debug' | 'test' | 'peers' | 'saveSession'> & {
-  readonly test: { readonly file: string; readonly titlePath: readonly string[]; readonly user: string };
+  readonly test: { readonly file: string; readonly titlePath: readonly string[]; readonly user: ScreenshotUser };
 };
 
 /**
@@ -906,7 +907,7 @@ export class TargetExecutor implements SerialHost {
   }
 
   /** A peer's replay cache in another executor's attempt: keyed on this executor's target and the peer's name, so no user replays another's recording. */
-  peerCache(testId: string, attemptIndex: number, user: string): AgentCacheContext | undefined {
+  peerCache(testId: string, attemptIndex: number, user: CachePeerIdentity): AgentCacheContext | undefined {
     return createAgentCacheContext({
       cache: this.config.cache,
       projectRoot: this.config.projectRoot,
@@ -1325,7 +1326,9 @@ export class TargetExecutor implements SerialHost {
         openPeers.map((open) => {
           const declared = pair.options.peers.find((peer) => peer.name === open.name)!;
           const peerAgent = declared.agent ?? pair.agent;
-          const peerCache = inMemory === undefined ? open.executor.peerCache(pair.test.id, attemptIndex, open.name) : undefined;
+          // The peer's recordings are its own in this pair: keyed by the test's own target and agent too.
+          const owner = { name: open.name, ownerTargetId: this.sessionIdentity.targetId, ownerAgent: pair.agent };
+          const peerCache = inMemory === undefined ? open.executor.peerCache(pair.test.id, attemptIndex, owner) : undefined;
           if (peerCache !== undefined) peerCaches.set(open.name, peerCache);
           const fixturesOfPeer = open.executor.peerFixtures({
             session: open.session,
@@ -1338,7 +1341,7 @@ export class TargetExecutor implements SerialHost {
             priorSteps: () => steps.completed().filter((step) => step.user === open.name),
             agentContext: declared.agentContext,
             agent: peerAgent,
-            test: { file: pair.test.file, titlePath: pair.test.titlePath, user: open.name },
+            test: { file: pair.test.file, titlePath: pair.test.titlePath, user: { name: open.name, ownerTarget: this.target.name } },
             ...(peerCache === undefined ? {} : { cache: peerCache }),
           });
           return [open.name, fixturesOfPeer];

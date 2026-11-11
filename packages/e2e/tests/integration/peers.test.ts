@@ -436,7 +436,8 @@ test('baselines', { peers: { ava: {} } }, async ({ app, screen, peers }) => {
       const snapshots = path.join(project.dir, 'tests', 'pair.e2e.ts-snapshots');
       const suffix = `-web-${process.platform}.png`;
       const mine = path.join(snapshots, `page${suffix}`);
-      const hers = path.join(snapshots, 'peers', 'ava', `page${suffix}`);
+      // Hers sits under the test's own target, then her name.
+      const hers = path.join(snapshots, 'peers', 'web', 'ava', `page${suffix}`);
       expect(existsSync(mine)).toBe(true);
       expect(existsSync(hers)).toBe(true);
       expect(readFileSync(hers).equals(readFileSync(mine))).toBe(false);
@@ -1068,6 +1069,76 @@ test('both count', { peers: { ava: {} } }, async ({ app, agent, screen, peers })
     }
   });
 
+  it("keeps a recording of a peer's step for each agent a test runs as, though the peer runs as one agent in both", async () => {
+    const files = {
+      'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('sweep', { agent: ['admin', 'member'], peers: { ava: { agent: 'guest' } } }, async ({ app, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  await peers.ava.agent.act('increment the counter twice');
+  await expect(peers.ava.screen.getByRole('status', 'Counter')).toHaveText('2');
+});
+`,
+    };
+    const configSource = counterConfig.replace('agents: { default: { executor: twice } },', 'agents: { default: { executor: twice }, admin: { executor: twice }, member: { executor: twice }, guest: { executor: twice } },');
+    const { outcome, project } = await runProjectWithConfigFile(files, { appUrl: app.url, configSource });
+    try {
+      const acts = outcome.results.map((result) => [result.agent, result.status, result.attempts[0]?.steps.find((step) => step.api === 'agent.act')?.cache?.write ?? null]);
+      // Each pair's peer recorded its own step: the admin pair's recording never stands in for the member pair's.
+      expect(acts.toSorted()).toEqual([
+        ['admin', 'passed', 'saved'],
+        ['member', 'passed', 'saved'],
+      ]);
+      expect(calls(project)).toHaveLength(2);
+      const entries = readdirSync(path.join(project.dir, '.e2e', 'cache'), { recursive: true }).filter((file) => String(file).endsWith('.json'));
+      expect(entries).toHaveLength(2);
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("keeps a peer's recordings and screenshot baselines for each target the test runs on, though the peer runs on one", async () => {
+    const files = {
+      'tests/pair.e2e.ts': `import { test, expect } from 'e2e';
+test('two targets', { peers: { ava: { target: 'web' } } }, async ({ app, peers }) => {
+  await app.open('/');
+  await peers.ava.app.open('/');
+  await peers.ava.agent.act('increment the counter twice');
+  await expect(peers.ava.screen.getByRole('status', 'Counter')).toHaveText('2');
+  await expect(peers.ava.screen).toHaveScreenshot('counter');
+});
+`,
+    };
+    const configSource = counterConfig.replace(
+      "targets: [{ name: 'web', engine: web(), app: { url: process.env.APP_URL! } }],",
+      "targets: [{ name: 'web', engine: web(), app: { url: process.env.APP_URL! } }, { name: 'web-b', engine: web(), app: { url: process.env.APP_URL! } }],",
+    );
+    const { outcome, project } = await runProjectWithConfigFile(files, { appUrl: app.url, configSource });
+    try {
+      const acts = (run: RunOutcome) =>
+        run.results.map((result) => [result.target.name, result.attempts[0]?.steps.find((step) => step.api === 'agent.act')?.cache?.write ?? null]).toSorted();
+      // Each pair's peer recorded its own step, and wrote its own missing baseline.
+      expect(acts(outcome)).toEqual([
+        ['web', 'saved'],
+        ['web-b', 'saved'],
+      ]);
+      expect(calls(project)).toHaveLength(2);
+      const snapshots = path.join(project.dir, 'tests', 'pair.e2e.ts-snapshots');
+      for (const pairTarget of ['web', 'web-b']) {
+        expect(existsSync(path.join(snapshots, 'peers', pairTarget, 'ava', `counter-web-${process.platform}.png`)), pairTarget).toBe(true);
+      }
+      // The next run replays each pair's own recording and matches each pair's own baseline.
+      const second = await runExistingWithConfigFile(project, { appUrl: app.url });
+      expect(second.results.map((result) => [result.target.name, result.status]).toSorted()).toEqual([
+        ['web', 'passed'],
+        ['web-b', 'passed'],
+      ]);
+      expect(calls(project)).toHaveLength(2);
+    } finally {
+      project.cleanup();
+    }
+  });
+
   it("runs a peer's step live under --strict-cache when only the test's own user has a recording of it", async () => {
     const { outcome, project } = await runProjectWithConfigFile(
       {
@@ -1128,9 +1199,16 @@ test('elsewhere', { platforms: ['web'], peers: { ava: { target: 'web-b' } } }, a
       const results = outcome.results.filter((result) => result.test.title === 'elsewhere');
       expect(results.map((result) => result.status)).toEqual(['passed', 'passed']);
       const files = readdirSync(path.join(project.dir, '.e2e', 'cache'), { recursive: true }).filter((file) => String(file).endsWith('.json'));
-      const recordedFor = files.map((file) => (JSON.parse(readFileSync(path.join(project.dir, '.e2e', 'cache', String(file)), 'utf8')) as { payload: { recordedFor?: { targetId: string; user?: string } } }).payload.recordedFor);
-      // Both runs of the test have Ava on "web-b": one recording, on her target.
-      expect(recordedFor.map((step) => [step?.targetId, step?.user])).toEqual([['web-b', 'ava']]);
+      const recordedFor = files.map(
+        (file) =>
+          (JSON.parse(readFileSync(path.join(project.dir, '.e2e', 'cache', String(file)), 'utf8')) as { payload: { recordedFor?: { targetId: string; user?: string; ownerTargetId?: string } } }).payload
+            .recordedFor,
+      );
+      // Both runs of the test have Ava on "web-b": each run's recording is on her target, one for each target the test ran on.
+      expect(recordedFor.map((step) => [step?.targetId, step?.user, step?.ownerTargetId]).toSorted()).toEqual([
+        ['web-b', 'ava', 'web'],
+        ['web-b', 'ava', 'web-b'],
+      ]);
     } finally {
       project.cleanup();
     }
