@@ -1267,9 +1267,16 @@ export class TargetExecutor implements SerialHost {
       // Each peer opens its own app before the deadline starts, as the test's
       // own app does, on an engine of its own.
       await this.launchPeers(pair, session, { id: attemptId, sink: artifacts.sink, recordings, signal: attemptAbort.signal }, openPeers, steps);
-      const settleUsers = async (): Promise<void> => {
-        await this.settleAttempt(session, attemptId);
-        for (const open of openPeers) await open.executor.settleAttempt(open.session, attemptId);
+      // Every user's app is settled, each failure recorded: one user's failure never keeps another's from the verdict.
+      const settleUsers = async (onFailure: (cause: unknown) => void | Promise<void>): Promise<void> => {
+        const settles = [() => this.settleAttempt(session, attemptId), ...openPeers.map((open) => () => open.executor.settleAttempt(open.session, attemptId))];
+        for (const settle of settles) {
+          try {
+            await settle();
+          } catch (cause) {
+            await onFailure(cause);
+          }
+        }
       };
 
       const testDeadline = new Deadline(pair.options.timeout);
@@ -1518,12 +1525,10 @@ export class TargetExecutor implements SerialHost {
       // the last step is collected here, so it is the verdict instead of the
       // next attempt's surprise. Evidence is taken now, before a teardown
       // navigates away from the page the callback saw.
-      try {
-        await settleUsers();
-      } catch (cause) {
+      await settleUsers(async (cause) => {
         recordFailure(cause, 'body');
         await captureEvidence();
-      }
+      });
 
       enter('afterEach');
       // Each teardown gets its own cleanup budget: a body that timed out or
@@ -1548,7 +1553,7 @@ export class TargetExecutor implements SerialHost {
           recordFailure(cause, 'afterEach');
         }
       }
-      await settleUsers().catch((cause: unknown) => recordFailure(cause, 'afterEach'));
+      await settleUsers((cause) => recordFailure(cause, 'afterEach'));
     } catch (cause) {
       recordFailure(cause, phase);
     } finally {

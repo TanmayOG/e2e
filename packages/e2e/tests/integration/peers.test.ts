@@ -1215,7 +1215,7 @@ const engine = createFakeEngine({
   onInit: () => { log('init'); ${behavior.includes('boot') ? "if (id > 1) throw new Error('the peer engine would not boot');" : ''} },
   onStartAttempt: () => { log('start'); ${behavior.includes('start') ? "if (id > 1) throw new Error('the peer app would not open');" : ''} },
   onEndAttempt: () => { log('end'); ${behavior.includes('end') ? "if (id > 1) throw new Error('the peer app would not close');" : ''} },
-  ${behavior.includes('settle') ? "onSettleAttempt: () => { if (id > 1) throw new Error('the peer app failed after its last step'); }," : ''}
+  ${behavior.includes('settle-every') ? "onSettleAttempt: () => { throw new Error('the ' + (id > 1 ? 'peer' : 'test') + ' app failed after its last step'); }," : behavior.includes('settle') ? "onSettleAttempt: () => { if (id > 1) throw new Error('the peer app failed after its last step'); }," : ''}
   onDispose: () => { log('dispose'); ${behavior.includes('dispose') ? "if (id > 1) throw new Error('the peer engine would not shut down');" : ''} },
 }).engine;
 
@@ -1419,6 +1419,26 @@ test('second', { peers: { ava: {} } }, async () => {});
       const { result, attempt, why } = onlyAttempt(outcome, 'pair');
       expect(result.status, why).toBe('failed');
       expect(attempt.error?.message).toContain('the peer app failed after its last step');
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("records every user's failure after the last step, the peer's beside the test's own app's", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      { 'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('pair', { peers: { ava: {} } }, async () => {});\n` },
+      { configSource: lifecycleConfig('settle-every') },
+    );
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'pair');
+      expect(result.status, why).toBe('failed');
+      // Settled after the body and again after teardown: each time every user is, whichever fails first.
+      expect([attempt.error!, ...attempt.secondaryErrors].map((error) => [error.phase, error.message])).toEqual([
+        ['body', 'attempt settle failed: the test app failed after its last step'],
+        ['body', 'attempt settle failed: the peer app failed after its last step'],
+        ['afterEach', 'attempt settle failed: the test app failed after its last step'],
+        ['afterEach', 'attempt settle failed: the peer app failed after its last step'],
+      ]);
     } finally {
       project.cleanup();
     }
