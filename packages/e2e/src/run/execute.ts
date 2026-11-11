@@ -497,7 +497,11 @@ export class TargetExecutor implements SerialHost {
       isolated: this.options.isolated,
       interruptSignal: this.interruptSignal,
       debug: this.debug,
-      events: { onNotice: (message) => this.options.events?.onNotice?.(message) },
+      // A model failure the peer's agent meets stops the run, as one the test's own agent meets does.
+      events: {
+        onNotice: (message) => this.options.events?.onNotice?.(message),
+        onRunAbort: (error) => this.options.events?.onRunAbort?.(error),
+      },
     });
   }
 

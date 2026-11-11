@@ -13,6 +13,7 @@ import { createFakeEngine, FAKE_APP } from '../helpers/fake-engine.ts';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
 import type { HeldStep } from '../../src/run/step-hold.ts';
 import { assertValidReport } from '../helpers/report-schema.ts';
+import { REFUSAL_EXPLANATION } from '../helpers/unserved-copilot-model.ts';
 import {
   listProject,
   resultByTitle,
@@ -1167,6 +1168,55 @@ function workerEvents(projectDir: string): string[] {
 }
 
 describe('peers: engines and lifecycle', () => {
+  it("stops the run once when a peer's agent meets a model its provider does not serve, as the test's own agent does", async () => {
+    // The same run twice: the test's own agent meets the model, then a peer's agent does.
+    const ends = async (options: string, fixture: string, agent: string) => {
+      const { outcome, project } = await runProjectWithConfigFile(
+        {
+          'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('first', ${options}, async ({ ${fixture} }) => {
+  await ${agent}.act('do the thing');
+});
+test('second', async () => {});
+`,
+        },
+        {
+          configSource: `import type { E2EConfig } from 'e2e';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+import { refusedCopilotModel } from '../../helpers/unserved-copilot-model.ts';
+
+export default {
+  targets: [{ name: 'fake', platform: 'fake', engine: createFakeEngine({ state: true }).engine, app: FAKE_APP }],
+  workers: 1,
+  cache: 'off',
+  agents: { default: {}, guest: { model: refusedCopilotModel() } },
+} satisfies E2EConfig;
+`,
+        },
+      );
+      try {
+        return {
+          exitCode: outcome.exitCode,
+          errors: outcome.report.run.errors.map((error) => [error.code, error.message.includes(REFUSAL_EXPLANATION)]),
+          results: outcome.report.run.results.map((result) => [result.titlePath.at(-1), result.status, result.attempts.length, result.attempts[0]?.error?.code]),
+        };
+      } finally {
+        project.cleanup();
+      }
+    };
+    const own = await ends("{ agent: 'guest' }", 'agent', 'agent');
+    // The run's stop cuts the test short in the worker, so its attempt reads interrupted or the model's code, as other runs of it do.
+    expect(own).toEqual({
+      exitCode: 2,
+      errors: [['MODEL_UNAVAILABLE', true]],
+      results: [
+        ['first', 'interrupted', 1, expect.stringMatching(/^(INTERRUPTED|MODEL_UNAVAILABLE)$/)],
+        ['second', 'skipped', 0, undefined],
+      ],
+    });
+    expect(await ends("{ peers: { ava: { agent: 'guest' } } }", 'peers', 'peers.ava.agent')).toEqual(own);
+  });
+
   it('runs a peer on an engine of its own, opened before the body and closed with the test, then disposed with the worker', async () => {
     const { outcome, project } = await runProjectWithConfigFile(
       {
