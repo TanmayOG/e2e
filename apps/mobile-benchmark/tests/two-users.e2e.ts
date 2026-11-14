@@ -13,9 +13,11 @@ const simulators = (process.env.E2E_MOBILE_BENCHMARK_IOS_DEVICE ?? '').split(','
 
 // A peer takes a device of its own beside the worker's, so the scenario runs
 // only where the run names two simulators, as CI does; a run with one would
-// stop before its first test. There, one worker runs the suite: the second
-// simulator is the peer's. iOS only: CI's Android job has one emulator.
-test.describe('two users', { platforms: ['ios'], skip: simulators < 2 ? 'needs two simulators in E2E_MOBILE_BENCHMARK_IOS_DEVICE' : false }, () => {
+// stop before its first test. Its peer takes the second simulator, so a run
+// that holds it runs every other test on one worker: CI runs the suite with
+// `--exclude-tag peers`, then this test alone with `--tag peers`. iOS only:
+// CI's Android job has one emulator.
+test.describe('two users', { tags: ['peers'], platforms: ['ios'], skip: simulators < 2 ? 'needs two simulators in E2E_MOBILE_BENCHMARK_IOS_DEVICE' : false }, () => {
   test('each user types on its own device, and each device fixture drives its own', { peers: { second: {} } }, async ({ app, device, screen, peers }) => {
     const second = { app: peers.second.app, device: peers.second.device as Device, screen: peers.second.screen };
     // Two devices, under two agent-device sessions.

@@ -419,3 +419,18 @@ it('redacts run names and scope metadata before label truncation', async () => {
   expect(runs[0]?.function_id).not.toContain(token.slice(0, 5));
   expect(runs[1]?.function_id).toBe('function <secret:key>');
 });
+
+it("redacts a peer's name, agent, and target in the scope and the run name", async () => {
+  const token = 'synthetic-peer-secret-271828';
+  const redact = (text: string): string => text.replaceAll(token, '<secret:key>');
+  const recorder = new AiTraceRecorder(redact);
+  const scope = { ...SCOPE, api: 'agent.act', label: 'accept', user: `ava-${token}`, userAgent: `agent-${token}`, userTarget: `target-${token}` };
+  await withAiTraceScope(scope, async () => {
+    await recorder.telemetry.onStart?.({ callId: 'peer', operationId: 'ai.generateText' } as never);
+    await recorder.telemetry.onEnd?.({ callId: 'peer' } as never);
+  });
+  const { runs } = recorder.drain();
+  expect(runs[0]?.e2e).toEqual({ ...scope, user: 'ava-<secret:key>', userAgent: 'agent-<secret:key>', userTarget: 'target-<secret:key>' });
+  expect(runs[0]?.function_id).toContain('ava-<secret:key>');
+  expect(JSON.stringify(runs)).not.toContain(token);
+});

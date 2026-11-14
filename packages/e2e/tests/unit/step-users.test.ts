@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { AppEvent } from '../../src/engine/surface.ts';
+import { APP_LOG_LIMITS } from '../../src/engine/session.ts';
 import { StepRecorder, type StepHoldRequest, type StepProgress } from '../../src/run/steps.ts';
 
 /** The agent and target peer ava's steps are attributed to. */
@@ -24,7 +25,7 @@ describe('StepRecorder.forUser', () => {
     const ava = steps.forUser('ava', AVA);
     await steps.run('app', 'app.open', '/', pass);
     await ava.run('agent', 'agent.act', 'accept the invite', async () => {
-      await steps.run('locator', 'locator.tap', 'button "Accept"', async () => {
+      await ava.run('locator', 'locator.tap', 'button "Accept"', async () => {
         steps.activity('action');
         steps.recordEvent({ kind: 'engine', startedAt: '2026-01-01T00:00:00.000Z', durationMs: 1, status: 'passed', detail: 'tapped' });
       });
@@ -58,6 +59,22 @@ describe('StepRecorder.forUser', () => {
     expect(steps.completed()).toHaveLength(2);
   });
 
+  it("records the test's own step inside a peer's step as the test's own: every step of a peer names it", async () => {
+    const steps = new StepRecorder('attempt');
+    const ava = steps.forUser('ava', AVA);
+    // The test's own check in an `onAction` hook of Ava's agent step, beside one of Ava's own.
+    await ava.run('agent', 'agent.act', 'accept the invite', async () => {
+      await steps.run('assertion', 'expect.toBeVisible', 'getByText("Cart")', pass);
+      await ava.run('locator', 'locator.tap', 'button "Accept"', pass);
+    });
+    expect(steps.all().map((step) => [step.api, step.user])).toEqual([
+      ['agent.act', 'ava'],
+      ['expect.toBeVisible', undefined],
+      ['locator.tap', 'ava'],
+    ]);
+    expect(ava.completed().map((step) => step.api)).toEqual(['agent.act', 'locator.tap']);
+  });
+
   it("files what a peer's app reports between steps with that peer's last step, and its first navigation with its first step", async () => {
     const steps = new StepRecorder('attempt');
     const ava = steps.forUser('ava', AVA);
@@ -74,6 +91,18 @@ describe('StepRecorder.forUser', () => {
       ['cart is empty', 1, undefined],
     ]);
     expect(Object.hasOwn(steps.appLog()[1]!, 'user')).toBe(false);
+  });
+
+  it("keeps each user's app log within its own limit, so a noisy peer leaves the test's own errors in", async () => {
+    const steps = new StepRecorder('attempt');
+    const ava = steps.forUser('ava', AVA);
+    await ava.run('app', 'app.open', '/invites', pass);
+    await steps.run('app', 'app.open', '/', pass);
+    for (let index = 0; index <= APP_LOG_LIMITS.errorsAndWarnings; index += 1) steps.recordAppEvent(log(`ava noise ${index}`), '2026-01-01T00:00:01.000Z', 'ava');
+    steps.recordAppEvent(log('checkout failed'), '2026-01-01T00:00:02.000Z');
+    const lines = steps.appLog();
+    expect(lines.filter((line) => line.user === 'ava')).toHaveLength(APP_LOG_LIMITS.errorsAndWarnings);
+    expect(lines.filter((line) => line.user === undefined).map((line) => line.text)).toEqual(['checkout failed']);
   });
 
   it("files what a peer's app reports while the test's own step runs with the peer's last step, not the running one", async () => {

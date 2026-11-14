@@ -277,7 +277,7 @@ export interface ReportAttempt extends ReportAttemptBase {
   appLog?: readonly AppLogRecord[] | undefined;
   /** What the runner saw when the failure landed; absent on a pass or when nothing could be captured. */
   failure?: FailureEvidence | undefined;
-  /** What each peer's app ran on and showed at the failure, by peer name; absent when the test has no peers. */
+  /** What each peer's app ran on and showed at the failure, by peer name: the peers whose app opened, so absent when none did. */
   peers?: Readonly<Record<string, PeerAttemptFacts>> | undefined;
   /** Why the body skipped itself; present when `status` is `skipped`, and on an attempt that failed after skipping. */
   skip?: SkipInfo | undefined;

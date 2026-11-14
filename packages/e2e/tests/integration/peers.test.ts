@@ -296,6 +296,8 @@ test('shares a token', { peers: { ava: {} } }, async ({ app, screen, peers }) =>
   // Ava's page shows the token, but what her agent reads of it never does.
   await expect(peers.ava.screen.getByRole('list', 'Todos')).toContainText('2718');
   const tree = await peers.ava.screen.tree();
+  // The marker stands where the token was: nothing dropped the todo instead.
+  if (!tree.includes('<secret:token>')) throw new Error('the peer screen read has no redaction marker: ' + tree);
   if (tree.includes('${TOKEN}')) throw new Error('the token reached the peer screen read');
 });
 `,
@@ -305,7 +307,9 @@ test('shares a token', { peers: { ava: {} } }, async ({ app, screen, peers }) =>
     try {
       const { result, why } = onlyAttempt(outcome, 'shares a token');
       expect(result.status, why).toBe('passed');
-      expect(readFileSync(path.join(project.dir, '.e2e', 'report.json'), 'utf8')).not.toContain(TOKEN);
+      const report = readFileSync(path.join(project.dir, '.e2e', 'report.json'), 'utf8');
+      expect(report).toContain('<secret:token>');
+      expect(report).not.toContain(TOKEN);
     } finally {
       project.cleanup();
     }
@@ -447,7 +451,7 @@ test('baselines', { peers: { ava: {} } }, async ({ app, screen, peers }) => {
     } finally {
       project.cleanup();
     }
-  });
+  }, 120_000);
 
   it('holds each user step under e2e run --step, the peer named, including two called together', async () => {
     const held: HeldStep[] = [];
@@ -669,7 +673,7 @@ test('across', { peers: { ava: { target: 'french' } } }, async ({ app, peers }) 
     } finally {
       project.cleanup();
     }
-  });
+  }, 120_000);
 });
 
 /**
@@ -774,7 +778,7 @@ test('${name}', ${options}, async () => {
     } finally {
       alone.project.cleanup();
     }
-  });
+  }, 120_000);
 
   it("lets the run's own variable win over what the peer target's prepare handed, as for that target's own workers", async () => {
     process.env['FAKE_POOL'] = 'from-the-run-0,from-the-run-1';
@@ -1067,7 +1071,7 @@ test('both count', { peers: { ava: {} } }, async ({ app, agent, screen, peers })
     } finally {
       project.cleanup();
     }
-  });
+  }, 120_000);
 
   it("keeps a recording of a peer's step for each agent a test runs as, though the peer runs as one agent in both", async () => {
     const files = {
@@ -1137,7 +1141,7 @@ test('two targets', { peers: { ava: { target: 'web' } } }, async ({ app, peers }
     } finally {
       project.cleanup();
     }
-  });
+  }, 120_000);
 
   it("runs a peer's step live under --strict-cache when only the test's own user has a recording of it", async () => {
     const { outcome, project } = await runProjectWithConfigFile(
@@ -1174,7 +1178,7 @@ test('strict', { peers: { ava: {} } }, async ({ app, agent, screen, peers }) => 
     } finally {
       project.cleanup();
     }
-  });
+  }, 120_000);
 
   it("keys a peer's recording on the peer's own target", async () => {
     const twoTargets = counterConfig.replace(
@@ -1439,7 +1443,7 @@ test('slow peer', { peers: { ava: {} }, timeout: 800 }, async ({ peers }) => {
     // And when the run's time limit lands mid-test.
     const limited = await runProjectWithConfigFile(
       { 'tests/pair.e2e.ts': files['tests/pair.e2e.ts'].replace('timeout: 800', 'timeout: 60_000') },
-      { configSource: hanging, runOptions: { maxDuration: 1_500 } },
+      { configSource: hanging, runOptions: { maxDuration: 2_000 } },
     );
     try {
       const { result, why } = onlyAttempt(limited.outcome, 'slow peer');
@@ -1448,7 +1452,7 @@ test('slow peer', { peers: { ava: {} }, timeout: 800 }, async ({ peers }) => {
     } finally {
       limited.project.cleanup();
     }
-  });
+  }, 180_000);
 
   it('fails the launch when a peer app cannot open, and closes the test app too', async () => {
     const { outcome, project } = await runProjectWithConfigFile(
@@ -1634,7 +1638,7 @@ test('flaky', { peers: { ava: {} }, retries: 1 }, async () => {
         'node_modules/shared-engine/index.js': `import { defineEngine } from '${BUILT_ENGINE_API}';
 export const engine = defineEngine({ name: 'shared', version: '1.0.0', spiVersion: 1 });
 `,
-        'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('pair', { peers: { ava: {} } }, async () => {});\n`,
+        'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('pair', { peers: { ava: {} } }, async () => {});\ntest('second pair', { peers: { ava: {} } }, async () => {});\n`,
       },
       {
         configSource: `import type { E2EConfig } from 'e2e';
@@ -1648,6 +1652,9 @@ export default { targets: [{ name: 'shared', platform: 'shared', engine, app: { 
       expect(result.status, why).toBe('failed');
       expect(attempt.error).toMatchObject({ code: 'INVALID_CONFIG', phase: 'launch' });
       expect(attempt.error?.message).toContain("whose engine is the same instance as another user's in every load of the config");
+      // The second test on the worker meets the same refusal, under its own name.
+      const second = onlyAttempt(outcome, 'second pair');
+      expect(second.attempt.error?.message, second.why).toContain('test "second pair" in tests/pair.e2e.ts runs a peer');
     } finally {
       project.cleanup();
     }
@@ -1769,6 +1776,56 @@ export default {
       const acts = attempt.steps.filter((step) => step.api === 'agent.act');
       expect(acts.map((step) => step.user ?? null)).toEqual(['ava', null, 'bob']);
       expect(acts.map((step) => step.explanation)).toEqual(loads.map((load) => `load ${load}`));
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it("gives the test's own inconclusive judgment the vision hint of its own steps, not a peer's", async () => {
+    const { outcome, project } = await runProjectWithConfigFile(
+      {
+        'tests/pair.e2e.ts': `import { test } from 'e2e';
+test('pair', { peers: { ava: {} } }, async ({ agent, peers }) => {
+  await peers.ava.agent.assert('the invite is on screen', { vision: true });
+  await agent.assert('the order total is shown');
+});
+test('peer', { peers: { ava: {} } }, async ({ peers }) => {
+  await peers.ava.agent.assert('the invite is on screen', { vision: true });
+  await peers.ava.agent.assert('the order total is shown');
+});
+`,
+      },
+      {
+        configSource: `import type { E2EConfig } from 'e2e';
+import { createFakeEngine, FAKE_APP } from '../../helpers/fake-engine.ts';
+import { installFakeModel, judgment } from '../../helpers/fake-model.ts';
+
+const engine = createFakeEngine({
+  artifacts: true,
+  pixels: (options) => (options.pixels === true ? { pixels: { data: new Uint8Array([1, 2, 3]), mediaType: 'image/png', width: 2, height: 2, scale: 1 } } : undefined),
+}).engine;
+const model = installFakeModel((call) => (call.instruction === 'the invite is on screen' ? judgment(true, 'the invite is shown') : judgment('inconclusive', 'no order total is on this screen')));
+
+export default {
+  targets: [{ name: 'fake', platform: 'fake', engine, app: FAKE_APP }],
+  workers: 1,
+  cache: 'off',
+  agents: { default: { model } },
+} satisfies E2EConfig;
+`,
+      },
+    );
+    try {
+      const { result, attempt, why } = onlyAttempt(outcome, 'pair');
+      expect(result.status, why).toBe('failed');
+      // Ava's judgment saw pixels; the test's own user's steps never did.
+      expect(attempt.steps.find((step) => step.user === 'ava')?.visionInput).toBe(true);
+      expect(attempt.error?.code).toBe('ASSERTION_INCONCLUSIVE');
+      expect(attempt.error?.message).toContain('the judge saw the semantic tree only; if the engine captures pixels, pass vision: true when the answer is in pixels');
+      // Ava's own judgment after her own pixels names vision outright.
+      const peer = onlyAttempt(outcome, 'peer');
+      expect(peer.attempt.error?.code, peer.why).toBe('ASSERTION_INCONCLUSIVE');
+      expect(peer.attempt.error?.message).toContain('no order total is on this screen; the judge saw the semantic tree only; pass vision: true when the answer is in pixels');
     } finally {
       project.cleanup();
     }

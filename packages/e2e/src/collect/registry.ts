@@ -172,6 +172,11 @@ class Collector {
       }
     }
     validateTestOptions(options, this.currentGroup, kind);
+    if (fixtures.some((fixture) => fixture.name === 'peers') && declaresPeers(options, this.currentGroup)) {
+      throw new CollectionError(
+        `test "${normalizedTitle}" declares peers, but its test.extend() chain defines a fixture named "peers"; rename that fixture to give the test its peers`,
+      );
+    }
     const titlePath = [...groupTitles(this.currentGroup), normalizedTitle];
     const registered: RegisteredTest = {
       kind,
@@ -464,6 +469,19 @@ function insideSerial(group: GroupNode | undefined): boolean {
   return outermostSerialGroup(group) !== undefined;
 }
 
+/** Whether a test with `options` in `group` has peers: its own, else the ones a group around it sets. */
+function declaresPeers(options: TestOptions, group: GroupNode | undefined): boolean {
+  return options.peers === undefined ? groupWithPeers(group) !== undefined : Object.keys(options.peers).length > 0;
+}
+
+/** The innermost group around `group` that sets peers its tests would take: none when the nearest one that sets them clears them. */
+function groupWithPeers(group: GroupNode | undefined): GroupNode | undefined {
+  for (let current = group; current !== undefined; current = current.parent) {
+    if (current.options.peers !== undefined) return Object.keys(current.options.peers).length > 0 ? current : undefined;
+  }
+  return undefined;
+}
+
 function validateTestOptions(options: TestOptions, group: GroupNode | undefined, kind: 'test' | 'setup'): void {
   if (kind === 'setup') validateCommonOptions(options, 'setup options', SETUP_OPTION_KEYS);
   else validateCommonOptions(options, 'test options', TEST_OPTION_KEYS);
@@ -502,6 +520,10 @@ function validateDescribeOptions(options: DescribeOptions, parent: GroupNode | u
   // A serial group runs as one unit on one shared app; a second user's app is not part of it yet.
   if (options.peers !== undefined && (options.serial === true || insideSerial(parent))) {
     throw new CollectionError('describe option "peers" cannot be set on or inside a serial group; a serial group runs on one shared app');
+  }
+  const peersAround = options.serial === true ? groupWithPeers(parent) : undefined;
+  if (peersAround !== undefined) {
+    throw new CollectionError(`describe option "serial" cannot be set inside a group with peers ("${peersAround.title}"); a serial group runs on one shared app`);
   }
   // The serial group records as one unit, so a describe inside it cannot choose its own recordings.
   for (const kind of ['trace', 'video'] as const) {
@@ -634,8 +656,12 @@ function normalizeArgs(
   return { options: optionsOrFn, fn: maybeFn };
 }
 
-/** Fixtures every attempt has without any engine or `test.extend()` defining them. */
-const CORE_FIXTURE_NAMES: ReadonlySet<string> = new Set(['agent', 'app', 'screen', 'platform', 'session', 'peers']);
+/**
+ * Fixtures every attempt has without any engine or `test.extend()` defining
+ * them. `peers` is one too, but a suite may still define its own, as it could
+ * before e2e had peers: only a test that declares peers through it is refused.
+ */
+const CORE_FIXTURE_NAMES: ReadonlySet<string> = new Set(['agent', 'app', 'screen', 'platform', 'session']);
 
 /**
  * Checks one `test.extend()` argument against the chain it extends. Names

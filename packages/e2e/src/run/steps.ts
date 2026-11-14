@@ -442,8 +442,8 @@ export class StepRecorder {
   private readonly lastVerifiedBy = new Map<string | undefined, number>();
   /** What the app logged this attempt, within `APP_LOG_LIMITS`. */
   private readonly logged: AppLogRecord[] = [];
-  /** App log entries of each kind `APP_LOG_LIMITS` counts, kept so far. */
-  private readonly loggedCounts = { errorsAndWarnings: 0, info: 0 };
+  /** App log entries of each kind `APP_LOG_LIMITS` counts, kept so far, by user: each user's app has its own limit. */
+  private readonly loggedCounts = new Map<string | undefined, { errorsAndWarnings: number; info: number }>();
   /** The last screen each running step saw, read only when the step ends. */
   private readonly seenScreens = new Map<string, () => ScreenText | undefined>();
   /** The last screen each user's finished step saw, the one that user's next step's is compared with; the test's own user is `undefined`. */
@@ -563,7 +563,8 @@ export class StepRecorder {
     // A verification run inside another step (an `onAction` hook's) proves
     // only what the steps before that one left, never the step still running.
     const verifiesBefore = parent?.index ?? this.steps.length;
-    const record = this.open(kind, api, label, stack, options, options.user ?? parent?.user);
+    // Each user's steps name it: a peer's come through its own sink, so one the test's own code runs inside a peer's step stays the test's.
+    const record = this.open(kind, api, label, stack, options, options.user);
     const promise = this.execute(record, body, options, verifiesBefore);
     this.pending.set(record.id, promise);
     return promise;
@@ -753,8 +754,10 @@ export class StepRecorder {
     }
     const { entry } = event;
     const counted = entry.level === 'info' ? 'info' : 'errorsAndWarnings';
-    if (this.loggedCounts[counted] >= APP_LOG_LIMITS[counted]) return;
-    this.loggedCounts[counted] += 1;
+    const counts = this.loggedCounts.get(user) ?? { errorsAndWarnings: 0, info: 0 };
+    if (counts[counted] >= APP_LOG_LIMITS[counted]) return;
+    counts[counted] += 1;
+    this.loggedCounts.set(user, counts);
     // Redacted before it is cut, so no cut leaves the head of a secret behind.
     const text = bound(this.redactText(entry.text.replace(/\s+/g, ' ').trim()), MAX_EVENT_DETAIL_CHARS);
     this.logged.push({ source: entry.source, level: entry.level, text, at, ...(target === undefined ? {} : { step: target.index }), ...(user === undefined ? {} : { user }) });

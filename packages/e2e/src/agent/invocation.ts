@@ -108,6 +108,8 @@ export interface AgentContext {
    * its location, not the acting agent's account.
    */
   readonly priorSteps: () => readonly StepRecord[];
+  /** The peer whose agent this is; undefined for the test's own user. `steps` may hold every user's steps; this agent reads its own. */
+  readonly user?: string | undefined;
   readonly secrets: SecretResolver;
   /** The attempt's live redactor (SecretLedger); sees values the moment they exist. */
   readonly redact: (text: string) => string;

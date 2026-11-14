@@ -490,10 +490,11 @@ test('Ava sees the payment', { session: 'member', peers: { ava: { session: 'ava'
 - A device peer takes a device of its own; with too few, the run starts
   fewer workers, and with none to spare for a peer it stops before any test.
 - Each peer's steps carry `user` in the report, its files go in
-  `peers/<name>/`, its replay recordings and screenshot baselines are its own
-  in each target and agent the test runs on, and its agent sees only its own
-  earlier steps. One secret ledger covers
-  every user.
+  `peers/<name>/`, its replay recordings are its own in each target and
+  agent the test runs on, its screenshot baselines in each target, and its
+  agent sees only its own earlier steps. One secret ledger covers every user.
+- A peer's engine fixtures (`browser`, `device`) are typed `unknown`: cast
+  one to use it, as in `peers.ava.device as Device`.
 - Not in a serial group, a setup test, `open_session`, on an engine-server
   target, a hosted browser or device provider, or a CDP attach. The peer's
   engine must be created in the config or a file it imports, in a run from a

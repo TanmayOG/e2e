@@ -456,6 +456,10 @@ export class TargetExecutor implements SerialHost {
     if (existing !== undefined) return existing;
     const pending = this.loadPeerExecutor(pair, targetName, index);
     this.peerExecutors.set(key, pending);
+    // A load that failed is not kept: the next test's peer tries again, and its error names that test.
+    pending.catch(() => {
+      if (this.peerExecutors.get(key) === pending) this.peerExecutors.delete(key);
+    });
     return pending;
   }
 
@@ -1333,7 +1337,7 @@ export class TargetExecutor implements SerialHost {
           const peerAgent = declared.agent ?? pair.agent;
           // The peer's recordings are its own in this pair: keyed by the test's own target and agent too.
           const owner = { name: open.name, ownerTargetId: this.sessionIdentity.targetId, ownerAgent: pair.agent };
-          const peerCache = inMemory === undefined ? open.executor.peerCache(pair.test.id, attemptIndex, owner) : undefined;
+          const peerCache = open.executor.peerCache(pair.test.id, attemptIndex, owner);
           if (peerCache !== undefined) peerCaches.set(open.name, peerCache);
           const fixturesOfPeer = open.executor.peerFixtures({
             session: open.session,

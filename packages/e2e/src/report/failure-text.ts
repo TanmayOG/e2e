@@ -113,18 +113,24 @@ export function toldAttempt(result: ReportResult, final: Outcome): AttemptView {
 /** A step that did not pass. */
 export type FailedStep = ReportStep & { readonly status: Exclude<ReportStep['status'], 'passed'> };
 
+/** What `failedStepOf` reads of a step: a report's, or a run record's, whose error keeps no source line. */
+type StepOutcome = Pick<ReportStep, 'status' | 'phase'> & { readonly error?: Pick<ReportError, 'code' | 'source'> | undefined };
+
 /**
  * The step whose error ended the attempt, with its position: the step in the
  * error's phase whose own error carries its code and line, else the last with
  * its code, since a caught failure comes earlier, else the step a timeout or
  * interrupt cut.
  */
-export function failedStepOf(attempt: { readonly steps: readonly ReportStep[]; readonly error?: ReportError | undefined }): { index: number; step: FailedStep } | undefined {
+export function failedStepOf<Step extends StepOutcome>(attempt: {
+  readonly steps: readonly Step[];
+  readonly error?: Pick<ReportError, 'code' | 'phase' | 'source'> | undefined;
+}): { index: number; step: Step & Pick<FailedStep, 'status'> } | undefined {
   const error = attempt.error;
   if (error === undefined) return undefined;
   const phase = error.phase;
   const candidates = attempt.steps.flatMap((step, index) =>
-    step.status !== 'passed' && (phase === undefined || (step.phase ?? 'body') === phase) ? [{ index, step: step as FailedStep }] : [],
+    step.status !== 'passed' && (phase === undefined || (step.phase ?? 'body') === phase) ? [{ index, step: step as Step & Pick<FailedStep, 'status'> }] : [],
   );
   const alike = candidates.filter(({ step }) => step.error?.code === error.code);
   const line = error.source;
@@ -256,9 +262,9 @@ export function appErrorLines(told: AttemptView): string[] {
   return [...shown.map(({ label, text }) => `App ${label}: ${code(text, MAX_DETAIL_CHARS)}`), ...(more === undefined ? [] : [more])];
 }
 
-/** The failure screenshot artifact of the told attempt, if one was recorded. */
+/** The failure screenshot of the told attempt, from the screen of the user whose step failed, if one was recorded. */
 export function failureScreenshot(told: AttemptView): ReportArtifact | undefined {
-  const id = told.failure?.screenshot;
+  const id = failureOf(told, failedStepOf(told)?.step.user)?.screenshot;
   return id === undefined ? undefined : told.artifacts.find((artifact) => artifact.id === id);
 }
 

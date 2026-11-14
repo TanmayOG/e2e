@@ -484,6 +484,90 @@ async function run(
   return collected;
 }
 
+describe('an app exit on a target that only hosts peers', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const failure: TargetFailure = {
+    targetNames: ['host'],
+    error: { category: 'infrastructure', code: 'APP_UNREACHABLE', message: 'target "host" command exited with code 1 after becoming ready', retryable: false },
+  };
+  const web = makeTarget('web', 0);
+  const host = makeTarget('host', 1);
+  const withPeer = (title: string) =>
+    makePair(makeTest(`tests/${title}.e2e.ts`, title), web, { options: { ...defaultOptions, peers: [{ name: 'ava', target: 'host', session: undefined, agent: undefined, agentContext: undefined }] } });
+  // The host runs no test of its own: a skipped pair gives it a plan, as a selected target has.
+  const hostSkipped = makePair(makeTest('tests/host.e2e.ts', 'host'), host, { disposition: 'skip', skip: { cause: 'platform-unavailable', reason: 'test declares platforms [web]' } });
+
+  it('reports the exit and skips a queued test that puts a peer there', async () => {
+    const pays = withPeer('pays');
+    const fleet = new FakeFleet();
+    const collected = await run(makeSelection([{ target: web, pairs: [pays] }, { target: host, pairs: [hostSkipped] }]), makeCollection([pays.test.file, hostSkipped.test.file], [pays, hostSkipped]), fleet, {
+      subscribeTargetFailures(receive) {
+        receive(failure);
+        return () => undefined;
+      },
+    });
+    expect(collected.runErrors).toEqual([{ error: failure.error }]);
+    expect(collected.results.find((result) => result.test.id === pays.test.id)).toMatchObject({ status: 'skipped', skip: { cause: 'infrastructure-unavailable', reason: failure.error.message } });
+    expect(fleet.unitsByWorker.flat()).toEqual([]);
+  });
+
+  it('reports the exit while a test that puts a peer there is running', async () => {
+    const pays = withPeer('pays');
+    const fleet = new FakeFleet({ overrun: { [pays.test.id]: 'slow-teardown' } });
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target: web, pairs: [pays] }, { target: host, pairs: [hostSkipped] }]), makeCollection([pays.test.file, hostSkipped.test.file], [pays, hostSkipped]), fleet, {
+      workers: 1,
+      subscribeTargetFailures(receive) {
+        setTimeout(() => receive(failure), 10);
+        return () => undefined;
+      },
+    });
+    await vi.runAllTimersAsync();
+    const collected = await running;
+    expect(collected.runErrors).toEqual([{ error: failure.error }]);
+    expect(fleet.unitsByWorker.flat().map((unit) => unit.unitId)).toEqual(['file::web::tests/pays.e2e.ts']);
+  });
+
+  it('ignores the exit once every test that put a peer there has reported', async () => {
+    const pays = withPeer('pays');
+    const after = makePair(makeTest('tests/pays.e2e.ts', 'after', { declarationIndex: 1 }), web);
+    const fleet = new FakeFleet({ overrun: { [after.test.id]: 'slow-teardown' } });
+    vi.useFakeTimers();
+    const running = run(makeSelection([{ target: web, pairs: [pays, after] }, { target: host, pairs: [hostSkipped] }]), makeCollection([pays.test.file, hostSkipped.test.file], [pays, after, hostSkipped]), fleet, {
+      workers: 1,
+      subscribeTargetFailures(receive) {
+        setTimeout(() => receive(failure), 10);
+        return () => undefined;
+      },
+    });
+    await vi.runAllTimersAsync();
+    const collected = await running;
+    expect(collected.results.find((result) => result.test.id === pays.test.id)?.status).toBe('passed');
+    expect(collected.runErrors).toEqual([]);
+  });
+
+  it('reports the exit while a starting worker holds a test that puts a peer there', async () => {
+    const pays = withPeer('pays');
+    const fleet = new FakeFleet({ neverReady: ['web'] });
+    const interrupt = new AbortController();
+    // The worker never becomes ready, so the run ends only when it is interrupted, after the exit.
+    const timer = setTimeout(() => interrupt.abort(), 40);
+    const collected = await run(makeSelection([{ target: web, pairs: [pays] }, { target: host, pairs: [hostSkipped] }]), makeCollection([pays.test.file, hostSkipped.test.file], [pays, hostSkipped]), fleet, {
+      workers: 1,
+      interruptSignal: interrupt.signal,
+      subscribeTargetFailures(receive) {
+        setTimeout(() => receive(failure), 10);
+        return () => undefined;
+      },
+    });
+    clearTimeout(timer);
+    expect(fleet.spawned.map((worker) => worker.targetName)).toEqual(['web']);
+    expect(fleet.unitsByWorker.flat()).toEqual([]);
+    expect(collected.runErrors).toEqual([{ error: failure.error }]);
+  });
+});
+
 describe('app command failures', () => {
   afterEach(() => vi.useRealTimers());
 
@@ -1876,9 +1960,29 @@ describe('peers and setup gating', () => {
       fleet,
       { workers: 2 },
     );
+    // The setup never ran: the target's own reason says why, not a setup failure.
     expect(collected.results.find((result) => result.test.id === pays.test.id)).toMatchObject({
       status: 'skipped',
-      skip: { cause: 'setup-failed', relatedId: 'setup::ava' },
+      skip: { cause: 'infrastructure-unavailable', reason: 'worker process failed to start' },
+    });
+  });
+
+  it('skips a test whose peer restores no session, when the peer target could not start a worker', async () => {
+    const web = makeTarget('web', 0);
+    const admin = makeTarget('admin', 1);
+    const pays = makePair(makeTest('tests/pays.e2e.ts', 'pays'), web, { options: { ...defaultOptions, peers: [{ name: 'ava', target: 'admin', session: undefined, agent: undefined, agentContext: undefined }] } });
+    const own = makePair(makeTest('tests/admin.e2e.ts', 'admin'), admin);
+    const fleet = new FakeFleet({ failInit: ['admin'] });
+    const collected = await run(
+      // The admin target comes first, so its workers fail before the web test is taken.
+      makeSelection([{ target: admin, pairs: [own] }, { target: web, pairs: [pays] }]),
+      makeCollection([own.test.file, pays.test.file], [own, pays]),
+      fleet,
+      { workers: 1 },
+    );
+    expect(collected.results.find((result) => result.test.id === pays.test.id)).toMatchObject({
+      status: 'skipped',
+      skip: { cause: 'infrastructure-unavailable', reason: 'worker process failed to start' },
     });
   });
 });

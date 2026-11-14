@@ -720,7 +720,7 @@ export interface TestFixtures {
 }
 
 /** `Fixtures` with `peers` narrowed to the names a test declares; unchanged when it declares none. */
-export type WithPeers<Fixtures, Peers> = [Peers] extends [never]
+type WithPeers<Fixtures, Peers> = [Peers] extends [never]
   ? Fixtures
   : Omit<Fixtures, 'peers'> & { readonly peers: { readonly [Name in keyof Peers]: PeerFixtures } };
 
@@ -859,8 +859,11 @@ export type FixtureFn<Fixtures, Value> = (
  * type error (and a `COLLECTION_ERROR` at runtime).
  */
 export type FixtureDefinitions<Base, Extra> = {
-  readonly [K in keyof Extra]: K extends keyof Base ? never : FixtureFn<Base, Extra[K]>;
+  // `peers` stays open to a suite's own fixture, as it was before e2e had peers.
+  readonly [K in keyof Extra]: K extends Exclude<keyof Base, 'peers'> ? never : FixtureFn<Base, Extra[K]>;
 };
+/** `Fixtures` and `Extra` together; a suite's own `peers` replaces the core one for its tests, which then declare no peers. */
+type Extended<Fixtures, Extra> = ('peers' extends keyof Extra ? Omit<Fixtures, 'peers'> : Fixtures) & Extra;
 /** A `describe` body. An async body is a type error. */
 export type SynchronousBody<Result> = Extract<Result, PromiseLike<unknown>> extends never
   ? () => Result
@@ -877,7 +880,8 @@ export interface TestAPI<Fixtures = TestFixtures> {
   /**
    * Registers one configured test synchronously during module evaluation.
    * The names the test's own `peers` option declares type its `peers`
-   * fixture, so a peer it never declared is a type error.
+   * fixture, so a peer it never declared is a type error; peers set on a
+   * `describe` are typed by any name.
    */
   <Peers extends Readonly<Record<string, PeerOptions>> = never>(
     title: string,
@@ -922,7 +926,7 @@ export interface TestAPI<Fixtures = TestFixtures> {
    *
    *   export const test = base.extend<{ device: Device }>();
    */
-  extend<Extra>(): TestAPI<Fixtures & Extra>;
+  extend<Extra>(): TestAPI<Extended<Fixtures, Extra>>;
   /**
    * Returns a new `test` whose registrations carry these fixture
    * definitions on top of the ones it already had. Each attempt sets them up
@@ -937,7 +941,7 @@ export interface TestAPI<Fixtures = TestFixtures> {
    *     },
    *   });
    */
-  extend<Extra>(fixtures: FixtureDefinitions<Fixtures, Extra>): TestAPI<Fixtures & Extra>;
+  extend<Extra>(fixtures: FixtureDefinitions<Fixtures, Extra>): TestAPI<Extended<Fixtures, Extra>>;
   /** Declares a group synchronously. */
   describe<Result>(title: string, body: SynchronousBody<Result>): void;
   /** Declares a configured group synchronously. */

@@ -504,7 +504,7 @@ class Scheduler {
     const affected: TargetState[] = [];
     for (const name of failure.targetNames) {
       const state = this.targets.get(name);
-      if (state !== undefined && this.hasPendingWork(state)) affected.push(state);
+      if (state !== undefined && (this.hasPendingWork(state) || this.hostsPendingPeers(state))) affected.push(state);
     }
     if (affected.length === 0) return;
     this.options.events.onRunError({ error: failure.error });
@@ -519,6 +519,25 @@ class Scheduler {
   private hasPendingWork(state: TargetState): boolean {
     return state.setupQueue.length > 0 || state.fileQueue.length > 0 || this.workers.some((worker) =>
       worker.targetName === state.target.name && (worker.queued !== undefined || worker.unit?.pairs.some((pair) => !worker.reported.has(pairKey(pair.test.id, pair.agent, pair.repeat))) === true),
+    );
+  }
+
+  /**
+   * Whether another target's work still to run puts a peer on this target:
+   * a queued unit, one a worker holds next, or a pair a worker runs that has
+   * not reported. Such a test cannot run once this target's app is gone.
+   */
+  private hostsPendingPeers(state: TargetState): boolean {
+    const name = state.target.name;
+    const bringsPeer = (pair: TestTargetPair): boolean => pair.options.peers.some((peer) => peerTarget(peer, pair) === name);
+    for (const other of this.targets.values()) {
+      if (other !== state && [...other.setupQueue, ...other.fileQueue].some((unit) => unit.pairs.some(bringsPeer))) return true;
+    }
+    return this.workers.some(
+      (worker) =>
+        worker.targetName !== name &&
+        (worker.queued?.pairs.some(bringsPeer) === true ||
+          worker.unit?.pairs.some((pair) => bringsPeer(pair) && !worker.reported.has(pairKey(pair.test.id, pair.agent, pair.repeat))) === true),
     );
   }
 
@@ -752,18 +771,18 @@ class Scheduler {
     else state.fileQueue.unshift(unit);
   }
 
-  /** Skip info when a pair's session was not produced by a passing setup. */
-  private dependencySkip(
-    state: TargetState,
-    pair: TestTargetPair,
-  ): ReturnType<typeof setupFailedSkip> | undefined {
+  /** Skip info when a pair's session was not produced by a passing setup, or a peer's target is unavailable. */
+  private dependencySkip(state: TargetState, pair: TestTargetPair): SkipInfo | undefined {
     const own = pair.options.session;
     const failedOwn = own === undefined ? undefined : state.failedSessions.get(own);
     if (own !== undefined && failedOwn !== undefined) return setupFailedSkip(own, failedOwn);
-    // A peer's session comes from its own target's setup, which may have failed there.
     for (const peer of pair.options.peers) {
+      const peerState = this.targets.get(peerTarget(peer, pair));
+      // A peer's app runs on its own target, whose app or workers may be gone.
+      if (peerState?.unavailable !== undefined) return peerState.unavailable.skip;
+      // A peer's session comes from its own target's setup, which may have failed there.
       if (peer.session === undefined) continue;
-      const failedPeer = this.targets.get(peerTarget(peer, pair))?.failedSessions.get(peer.session);
+      const failedPeer = peerState?.failedSessions.get(peer.session);
       if (failedPeer !== undefined) return setupFailedSkip(peer.session, failedPeer);
     }
     return undefined;
@@ -1216,9 +1235,6 @@ class Scheduler {
    * workers; a boot failure is recorded once before returned units skip.
    */
   private failTarget(state: TargetState, unavailable: TargetUnavailable): void {
-    // Its setups never ran, so another target's peer restoring one of their
-    // sessions skips like a dependent of a failed setup instead of failing at restore.
-    for (const unit of state.setupQueue) for (const pair of unit.pairs) this.markSessionsFailed(state, pair);
     if (state.unavailable === undefined && unavailable.kind === 'worker-start') {
       this.options.events.onRunError({
         error: serializeError(

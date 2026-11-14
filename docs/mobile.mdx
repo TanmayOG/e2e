@@ -483,10 +483,16 @@ test('both see the order', { platforms: ['ios'], peers: { courier: {} } }, async
 });
 ```
 
-With too few devices, the run starts fewer workers and says so. With fewer
-than one worker and its peers need, it stops before any test. A device
-restores no saved login, so a device peer signs in during the test. A peer
-can't take a device from a [device provider](#hosted-devices).
+The run sets those devices aside for every worker on the target, for the
+whole run, so one test with a peer leaves the target fewer workers for every
+test. With too few devices, it starts fewer workers and says so. When one
+worker and its peers don't fit, it stops before any test. To keep the rest of
+a suite on every device, tag the tests with peers and run them on their own,
+as the mobile benchmark's CI does: `--exclude-tag peers` for the suite, then
+`--tag peers`.
+
+A device restores no saved login, so a device peer signs in during the test.
+A peer can't take a device from a [device provider](#hosted-devices).
 
 ## Agent tools
 

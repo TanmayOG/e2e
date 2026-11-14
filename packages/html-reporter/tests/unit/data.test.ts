@@ -1,6 +1,6 @@
 import type { Report } from 'e2e';
 import { describe, expect, it } from 'vitest';
-import { buildModel, timedVideos, videoPosition, videoUsers, type Artifact, type Step } from '../../app/data.ts';
+import { buildModel, failuresByUser, timedVideos, videoPosition, videoUsers, type Artifact, type Step } from '../../app/data.ts';
 import { failurePrompt } from '../../app/prompt.ts';
 import fixture from '../../../e2e/schema/fixtures/report-v1.valid.json' with { type: 'json' };
 
@@ -39,6 +39,18 @@ describe('videos of more than one user', () => {
 
   it('lists no user whose videos the page cannot show', () => {
     expect(videoUsers(artifacts, { mode: 'none' })).toEqual([]);
+  });
+});
+
+describe('each user at the failure', () => {
+  it("lists the test's own screen first, then each peer's under its name, and leaves out a user with none", () => {
+    const model = buildModel({ report: REPORT, media: { mode: 'none' }, resultsDir: '.e2e/results', traces: {}, sources: {} });
+    const attempt = model.attempts(model.results[0]!)[0]!;
+    expect(failuresByUser(attempt).map(({ user, failure }) => [user, failure.url])).toEqual([
+      [undefined, 'http://127.0.0.1:3000/todos'],
+      ['guest', 'http://127.0.0.1:3000/invites'],
+    ]);
+    expect(failuresByUser({ ...attempt, failure: undefined, peers: { ...attempt.peers, bob: { target: 'web' } } }).map(({ user }) => user)).toEqual(['guest']);
   });
 });
 

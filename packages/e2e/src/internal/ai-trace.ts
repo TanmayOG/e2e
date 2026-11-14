@@ -527,6 +527,9 @@ function redactScope(scope: AiTraceScope | undefined, redact: (text: string) => 
     agent: redact(scope.agent),
     ...(scope.api === undefined ? {} : { api: redact(scope.api) }),
     ...(scope.label === undefined ? {} : { label: redact(scope.label) }),
+    ...(scope.user === undefined ? {} : { user: redact(scope.user) }),
+    ...(scope.userAgent === undefined ? {} : { userAgent: redact(scope.userAgent) }),
+    ...(scope.userTarget === undefined ? {} : { userTarget: redact(scope.userTarget) }),
   };
 }
 

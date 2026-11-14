@@ -293,7 +293,8 @@ Declare more users with [`peers`](/reference/test#peers). Each peer gets an
 app of its own, next to the test's, and the test drives both:
 
 ```ts title="tests/payment.e2e.ts"
-import { test, expect } from 'e2e';
+import { test } from '@e2e-dev/web';
+import { expect } from 'e2e';
 
 test('Ava sees the payment', { session: 'member', peers: { ava: { session: 'ava' } } }, async ({ app, screen, peers }) => {
   await app.open('/pay');
@@ -305,8 +306,10 @@ test('Ava sees the payment', { session: 'member', peers: { ava: { session: 'ava'
 ```
 
 `peers.ava` has its own `app`, `screen`, `agent`, and `platform`, and its
-engine's fixtures, such as `browser` or `device`. A peer opens before
-`beforeEach` and closes with the test, also when it fails.
+engine's fixtures, such as `browser` or `device`. Those are typed `unknown`,
+since the peer's target decides them: cast one to use it, as in
+`peers.ava.device as Device`. A peer opens before `beforeEach` and closes
+with the test, also when it fails.
 
 - **Its own target.** Set `target: 'iphone'` to put the peer on another
   target. The run must select it. The test still runs once on each selected
@@ -314,21 +317,18 @@ engine's fixtures, such as `browser` or `device`. A peer opens before
 - **Its own login.** A peer's `session` is saved by a setup test on the
   peer's target. A phone restores no saved login, so a phone peer signs in
   during the test.
-- **Its own device.** Each phone peer takes a simulator or emulator of its
-  own. With too few, the run starts fewer workers and says so. With not
-  enough for one worker and its peers, the run stops before any test.
+- **Its own device.** A phone peer takes a simulator or emulator of its own:
+  see [Two users on two devices](/mobile#two-users-on-two-devices).
 - **Its own records.** The report, the trace page, and the terminal name the
   peer on each of its steps. Its files go in `peers/<name>/`, its replay
-  recordings and screenshot baselines are its own in each target and agent
-  the test runs on, and its agent sees only its own earlier steps.
+  recordings are its own in each target and agent the test runs on, its
+  screenshot baselines in each target, and its agent sees only its own
+  earlier steps.
 - **One set of secrets.** A secret either user types is redacted from what
   every user's agent reads, and from every record of the attempt.
 
-A peer can't run in a serial group, a setup test, or an `e2e mcp` session. It
-can't run on a target served by an engine server, a hosted browser or device
-provider, or a browser attached over CDP. Its engine must be created in the
-config file or a file it imports, not inside a package, and the run must load
-a config file.
+Where a peer can't run, such as a serial group or a hosted browser, and the
+error each case gives, is in the [`peers` reference](/reference/test#peers).
 
 ## Next
 
@@ -339,7 +339,7 @@ a config file.
   <Card title="Config reference" icon="sliders" href="/reference/config#credentials">
     The `credentials` and `secrets` blocks.
   </Card>
-  <Card title="peers" icon="users" href="/reference/test#peers">
-    Every field of a peer, and the errors.
+  <Card title="Peer options" icon="users" href="/reference/test#peers">
+    Every option of a peer, and the errors.
   </Card>
 </CardGroup>

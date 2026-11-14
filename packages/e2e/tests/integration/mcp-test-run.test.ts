@@ -387,11 +387,12 @@ describe('open_session {test}', { timeout: 120_000 }, () => {
   });
 
   /** An in-process host whose sessions load `config` on the fixture app, as the project's config file would. */
-  const inProcessHost = (project: FixtureProject, config: Omit<E2EConfig, 'targets'> = {}) =>
+  // `targets` is called on every load, so each session gets engines of its own, as a config file's load does.
+  const inProcessHost = (project: FixtureProject, config: Omit<E2EConfig, 'targets'> = {}, targets = () => [webTarget('web', app.url)]) =>
     new SessionHost({
       locateConfig: () => path.join(project.dir, 'e2e.config.ts'),
       loadConfig: async (configPath) => ({
-        ...resolveConfig({ ...config, targets: [webTarget('web', app.url)] } as E2EConfig as never, { projectRoot: project.dir, env: {}, configPath }),
+        ...resolveConfig({ ...config, targets: targets() } as E2EConfig as never, { projectRoot: project.dir, env: {}, configPath }),
         configPath,
       }),
       loadEngineConfig: () => Promise.reject(new Error('these sessions open on the config')),
@@ -399,6 +400,25 @@ describe('open_session {test}', { timeout: 120_000 }, () => {
       headed: false,
       log: () => undefined,
     });
+
+  describe('a test with a peer on another target', () => {
+    let project: FixtureProject;
+
+    beforeAll(() => {
+      project = createProject({
+        'tests/pair.e2e.ts': `import { test } from 'e2e';\ntest('with a peer elsewhere', { peers: { ava: { target: 'admin' } } }, async () => {});\n`,
+      });
+    });
+    afterAll(() => project.cleanup());
+
+    it('is refused as a test a session cannot run, not as a run that left its target out', async () => {
+      const sessions = inProcessHost(project, {}, () => [webTarget('web', app.url), webTarget('admin', app.url)]);
+      await expect(sessions.open({ test: 'tests/pair.e2e.ts', target: 'web' })).rejects.toMatchObject({
+        code: 'SESSION_TEST_UNSUPPORTED',
+        message: 'test "with a peer elsewhere" (tests/pair.e2e.ts:2) runs peers "ava", each on an app of its own; a session drives one app, so run it with npx e2e run',
+      });
+    });
+  });
 
   describe('the replay cache', () => {
     const counter = FLOWS.find((flow) => flow.title === 'increments the counter')!;

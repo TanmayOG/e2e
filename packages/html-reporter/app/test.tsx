@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   artifactUrl,
   formatClock,
+  failuresByUser,
   formatCost,
   formatDuration,
   formatTokens,
@@ -15,6 +16,7 @@ import {
   type Result,
   type Step,
   type TimedVideo,
+  type UserFailure,
 } from './data.ts';
 import { CodeFrame, ErrorBlock, hasFrame } from './failure.tsx';
 import { failurePrompt } from './prompt.ts';
@@ -131,7 +133,8 @@ function AttemptPanel({ attempt, model, prompt, platform }: { attempt: AttemptVi
       : thrownAt;
 
   // The failure evidence has its own section; the gallery and the file list leave it out.
-  const evidence = new Set([attempt.failure?.screenshot, attempt.failure?.screen]);
+  const atFailure = failuresByUser(attempt);
+  const evidence = new Set(atFailure.flatMap(({ failure }) => [failure.screenshot, failure.screen]));
   // A page without media (`media: 'none'`), or a file the reporter could not embed, has no URL to show.
   const shown = attempt.artifacts.filter((artifact) => !evidence.has(artifact.id) && artifactUrl(artifact, model.media) !== undefined);
   const screenshots = shown.filter((artifact) => artifact.kind === 'screenshot');
@@ -193,7 +196,9 @@ function AttemptPanel({ attempt, model, prompt, platform }: { attempt: AttemptVi
         </section>
       )}
       <div className="grid gap-e2e-4 md:grid-cols-2">
-        <FailureEvidence attempt={attempt} model={model} />
+        {atFailure.map(({ user, failure }) => (
+          <FailureEvidence key={user ?? ''} user={user} failure={failure} artifacts={attempt.artifacts} model={model} />
+        ))}
         {screenshots.length === 0 ? null : (
           <section aria-label="Screenshots" className="flex flex-col gap-e2e-1">
             <h2 className="type-caption text-shade-500">screenshots</h2>
@@ -406,15 +411,15 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function FailureEvidence({ attempt, model }: { attempt: AttemptView; model: ReportModel }) {
-  const { failure } = attempt;
-  if (failure === undefined) return null;
-  const find = (id: string | undefined) => (id === undefined ? undefined : attempt.artifacts.find((artifact) => artifact.id === id));
+/** What one user's screen showed at the failure; a peer's names it. */
+function FailureEvidence({ user, failure, artifacts, model }: UserFailure & { artifacts: readonly Artifact[]; model: ReportModel }) {
+  const find = (id: string | undefined) => (id === undefined ? undefined : artifacts.find((artifact) => artifact.id === id));
   const screenshot = find(failure.screenshot);
   const screen = find(failure.screen);
+  const whose = user === undefined ? '' : ` · ${user}`;
   return (
-    <section aria-label="At failure" className="flex flex-col gap-e2e-1">
-      <h2 className="type-caption text-shade-500">at failure</h2>
+    <section aria-label={`At failure${whose}`} className="flex flex-col gap-e2e-1">
+      <h2 className="type-caption text-shade-500">at failure{whose}</h2>
       {failure.url === undefined ? null : <span className="type-code-s truncate text-shade-300">{failure.url}</span>}
       {screenshot === undefined ? null : <Screenshot artifact={screenshot} model={model} />}
       {screen === undefined ? null : <ArtifactLink artifact={screen} model={model} label={`screen at failure${failure.nodes === undefined ? '' : ` (${failure.nodes} nodes)`}`} />}

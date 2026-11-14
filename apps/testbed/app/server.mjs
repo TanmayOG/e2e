@@ -12,26 +12,8 @@ import { playwrightRoutes } from './playwright/routes.mjs';
 
 const PORT = Number(process.env.PORT ?? 4271);
 const playwright = playwrightRoutes(PORT);
-/** The message board every visitor shares: one user posts, any other sees it (the peers tests). */
+/** The message board every visitor shares: one user posts, any other sees it (the peers test). */
 const messages = [];
-
-function escapeHtml(text) {
-  return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
-}
-
-/** The board as `author` sees it: who they are, every message so far, and a form to post one. */
-function messagesBody(author) {
-  const items = messages.map((message) => `<li>${escapeHtml(message.author)}: ${escapeHtml(message.text)}</li>`).join('\n      ');
-  return `<h1>Messages</h1>
-  <p>Signed in as <output aria-label="Signed in as">${author}</output></p>
-  <ul aria-label="Messages">
-      ${items}
-  </ul>
-  <form method="post" action="/messages">
-    <label>Message <input name="text" /></label>
-    <button type="submit">Post</button>
-  </form>`;
-}
 
 function parseCookies(request) {
   const header = request.headers.cookie ?? '';
@@ -94,7 +76,7 @@ const server = createServer(async (request, response) => {
       send(303, { location: '/messages' });
       return;
     }
-    html(layout('Messages', messagesBody(author)));
+    html(render('/messages', { user: author, messages }));
     return;
   }
   if (url.pathname === '/logout') {

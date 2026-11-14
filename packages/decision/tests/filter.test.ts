@@ -542,6 +542,7 @@ describe('decisionFilter', () => {
     const untouched = scriptedJudge(() => 0);
     expect(await decisionFilter({ model: untouched.model }).filter([withPeers, FINDS], filterContext(edited).context)).toEqual({
       exclude: { [FINDS.id]: '0% likely affected' },
+      relevance: { [ADDS.id]: 1, [FINDS.id]: 0 },
       note: '1 test ran without asking: the test file, setup file, or stored screenshots changed; 1 call, 10 tokens',
     });
 
@@ -551,6 +552,7 @@ describe('decisionFilter', () => {
     const likely = scriptedJudge((text) => (text === peersAsked ? 0.6 : 0.1));
     expect(await decisionFilter({ model: likely.model }).filter([withPeers, FINDS], filterContext(repo).context)).toEqual({
       exclude: { [FINDS.id]: '10% likely affected' },
+      relevance: { [ADDS.id]: 0.6, [FINDS.id]: 0.1 },
       note: '1 call, 10 tokens',
     });
     expect(Object.values(likely.requests[0]?.instructions ?? {}).filter((text) => text === peersAsked)).toHaveLength(1);
@@ -567,8 +569,19 @@ describe('decisionFilter', () => {
     const peerLikelier = scriptedJudge((text) => (text === peersAsked ? 0.6 : text === ownAsked ? 0.1 : 0.05));
     expect(await decisionFilter({ model: peerLikelier.model }).filter([{ ...withSetup(ADDS, OWN), peerSetupFiles: [PEERS] }], filterContext(both).context)).toEqual({
       exclude: {},
+      relevance: { [ADDS.id]: 0.6 },
       note: '1 call, 10 tokens',
     });
+
+    // When every call fails, the error still scores a test whose peer setup changed as one the change touches.
+    const failing = scriptedJudge(
+      () => 0,
+      () => {
+        throw new Error('Unauthorized: no AI Gateway key');
+      },
+    );
+    const error = await rejection(decisionFilter({ model: failing.model }).filter([withPeers, FINDS], filterContext(changedRepo(base, { 'src/login.ts': 'export const ok = 2;\n', [PEERS]: "setup('signs in ava', async () => { /* edited */ });\n" })).context));
+    expect(error).toMatchObject({ message: 'Unauthorized: no AI Gateway key', relevance: { [ADDS.id]: 1, [FINDS.id]: 0.5 } });
   });
 
   it('sends the provider options it is given with every call', async () => {

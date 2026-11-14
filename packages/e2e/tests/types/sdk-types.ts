@@ -672,6 +672,15 @@ test('as each', { peers: { ava: { agent: ['ava', 'bob'] } } }, async () => {});
 // @ts-expect-error a setup test saves sessions and declares no peers
 test.setup('sign in', { sessions: ['ava'], peers: { ava: {} } }, async () => {});
 // Each peer has the test user's fixtures over its own app, and its engine's own.
+// A suite's own fixture named peers, as before e2e had peers, keeps its own type.
+const withOwnPeers = test.extend<{ peers: number }>({ peers: async (_fixtures, use) => use(7) });
+withOwnPeers('counts its own peers', async ({ peers }) => {
+  const count: number = peers;
+  // @ts-expect-error the suite's own peers is a number, not the core peers fixture
+  const core: Readonly<Record<string, unknown>> = peers;
+  void count;
+  void core;
+});
 test('sees the payment', { peers: { ava: {} } }, async ({ peers }) => {
   const ava = peers.ava;
   // @ts-expect-error the test declares no peer bob

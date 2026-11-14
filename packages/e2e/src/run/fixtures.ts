@@ -253,6 +253,7 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     app: environment.target.app,
     attempt: environment.attempt,
     priorSteps: environment.priorSteps,
+    ...(environment.test?.user === undefined ? {} : { user: environment.test.user.name }),
     secrets,
     redact: ledger.redact,
     redactCut: ledger.redactCut,

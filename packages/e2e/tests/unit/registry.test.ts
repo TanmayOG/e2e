@@ -414,6 +414,21 @@ describe('peers', () => {
       test.describe('inner', { peers: { ava: {} } }, () => {});
     }))).rejects.toThrow('describe option "peers" cannot be set on or inside a serial group');
   });
+
+  it('refuses a serial group inside a group whose peers its tests would take, and allows one under a group that clears them', async () => {
+    await expect(register(() => test.describe('outer', { peers: { ava: {} } }, () => {
+      test.describe('group', { serial: true }, () => {
+        test('member', noop);
+      });
+    }))).rejects.toThrow('describe option "serial" cannot be set inside a group with peers ("outer"); a serial group runs on one shared app');
+    await expect(register(() => test.describe('outer', { peers: { ava: {} } }, () => {
+      test.describe('alone', { peers: {} }, () => {
+        test.describe('group', { serial: true }, () => {
+          test('member', noop);
+        });
+      });
+    }))).resolves.toBeDefined();
+  });
 });
 
 describe('test.extend', () => {
@@ -464,7 +479,7 @@ describe('test.extend', () => {
   });
 
   it('rejects core fixture names and names an earlier extend already defined', () => {
-    for (const name of ['agent', 'app', 'screen', 'platform', 'session', 'peers']) {
+    for (const name of ['agent', 'app', 'screen', 'platform', 'session']) {
       expect(() => test.extend({ [name]: fixture } as never)).toThrow(
         new RegExp(`"${name}" is a core fixture`),
       );
@@ -473,6 +488,22 @@ describe('test.extend', () => {
     expect(() => extended.extend({ workspace: fixture } as never)).toThrow(
       /fixture "workspace" is already defined by an earlier test.extend\(\)/,
     );
+  });
+});
+
+describe("a suite's own fixture named peers", () => {
+  const register = (declare: () => void) => collectModule(async () => declare());
+  const own = test.extend<{ peers: string }>({ peers: async (_fixtures, use) => use('mine') });
+
+  it('keeps working for its tests that declare no peers, as before e2e had peers', async () => {
+    await expect(register(() => own('no peers', noop))).resolves.toBeDefined();
+    await expect(register(() => test.describe('group', { peers: { ava: {} } }, () => own('cleared', { peers: {} }, noop)))).resolves.toBeDefined();
+  });
+
+  it('refuses a test that declares peers through it, on the test or a describe around it', async () => {
+    const refusal = 'declares peers, but its test.extend() chain defines a fixture named "peers"; rename that fixture to give the test its peers';
+    await expect(register(() => own('with peers', { peers: { ava: {} } }, noop))).rejects.toThrow(`test "with peers" ${refusal}`);
+    await expect(register(() => test.describe('group', { peers: { ava: {} } }, () => own('inside', noop)))).rejects.toThrow(`test "inside" ${refusal}`);
   });
 });
 

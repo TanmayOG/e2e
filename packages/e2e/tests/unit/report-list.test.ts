@@ -6,7 +6,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { resultId } from '../../src/internal/ids.ts';
 import { visibleWidth } from '../../src/report/format.ts';
 import { ListReporter } from '../../src/report/list.ts';
-import { stepPromptLine } from '../../src/report/list-steps.ts';
+import { stepLine, stepPromptLine, stepPromptRows } from '../../src/report/list-steps.ts';
+import picocolors from 'picocolors';
 import { userFrame } from '../../src/report/code-frame.ts';
 import type { CacheWrite } from '../../src/cache/context.ts';
 import type { RunEventFact, RunEventOf, RunEventResult } from '../../src/run/events.ts';
@@ -454,6 +455,46 @@ describe('ListReporter', () => {
       expect(lines).toContain(' ❯ at https://app.test/checkout');
       expect(lines).toContain(' ❯ on screen button "Pay later"');
       expect(lines).toContain(' ❯ screen .e2e/artifacts/chromium/a/attempt-0/screen.txt');
+    });
+
+    it("shows the screen of the peer whose step failed, named, and not the test user's", () => {
+      const { lines, output } = capture();
+      const reporter = plainReporter(output);
+      reporter.handle(runStarted());
+      reporter.handle(plan([{ file: 'tests/a.e2e.ts', tests: 1 }]));
+      const step = (user: string | undefined, status: string) =>
+        ({
+          id: `${user ?? 'own'}-step`,
+          index: 0,
+          kind: 'locator',
+          api: 'locator.tap',
+          label: 'Accept',
+          status,
+          startedAt: new Date(0).toISOString(),
+          durationMs: 10,
+          events: [],
+          artifacts: [],
+          ...(user === undefined ? {} : { user }),
+          ...(status === 'failed' ? { error: { category: 'test', code: 'ASSERTION_FAILED', message: 'no Accept button', retryable: false } } : {}),
+        }) as unknown as AttemptRecord['steps'][number];
+      const failed = failedAttempt('no Accept button');
+      failed.steps = [step(undefined, 'passed'), step('ava', 'failed')];
+      const screenText = (id: string, user: string | undefined, file: string) => ({
+        id, kind: 'log' as const, mediaType: 'text/plain', path: file, redaction: 'complete' as const, producer: { kind: 'attempt' as const }, ...(user === undefined ? {} : { user }),
+      });
+      failed.failure = { url: 'https://app.test/cart', candidates: ['button "Checkout"'], screen: 'attempt-1:artifact:0' };
+      failed.peers = { ava: { target: 'chromium', failure: { url: 'https://app.test/invites', candidates: ['button "Accept invite"'], screen: 'attempt-1:artifact:1' } } };
+      failed.artifacts = [
+        screenText('attempt-1:artifact:0', undefined, 'chromium/a/attempt-0/screen.txt'),
+        screenText('attempt-1:artifact:1', 'ava', 'chromium/a/attempt-0/peers/ava/screen.txt'),
+      ];
+      reporter.handle(finished(result({ status: 'failed', id: 'a', file: 'tests/a.e2e.ts', title: ['invites'], attempts: [failed] })));
+      reporter.handle(runFinished({ status: 'failed', exitCode: 1, reportPath: '/project/.e2e/report.json' }));
+      expect(lines).toContain(' ❯ at ava · https://app.test/invites');
+      expect(lines).toContain(' ❯ on screen button "Accept invite"');
+      expect(lines).toContain(' ❯ screen .e2e/artifacts/chromium/a/attempt-0/peers/ava/screen.txt');
+      expect(lines.join('\n')).not.toContain('https://app.test/cart');
+      expect(lines.join('\n')).not.toContain('Checkout');
     });
 
     it('quotes the first app errors under the tally, loopback origins dropped, and counts the rest', () => {
@@ -2332,5 +2373,20 @@ describe('screenshots row', () => {
       ...Array.from({ length: 9 }, (_, index) => `             .e2e/artifacts/s/${index + 1}.png`),
       '             and 2 more (the report lists every artifact)',
     ]);
+  });
+});
+
+describe('step lines in color', () => {
+  it("color a peer's name, and add no empty color codes for the test's own user", () => {
+    const pc = picocolors.createColors(true);
+    const step = { status: 'passed', api: 'locator.tap', label: 'Pay', durationMs: 5, modelCalls: 0 } as Parameters<typeof stepLine>[1];
+    const emptyCyan = '\u001b[36m\u001b[39m';
+    expect(stepLine(pc, step)).not.toContain(emptyCyan);
+    expect(stepLine(pc, { ...step, user: 'ava' })).toContain(pc.cyan('ava · '));
+    const held = { target: 'web', testId: 't1', agent: 'default', repeat: 0, title: 'pays', api: 'locator.tap', label: 'Pay' };
+    const [own] = stepPromptRows(pc, { steps: [{ step: held, number: 1 }], help: false }, { maxWidth: 120 });
+    expect(own).not.toContain(emptyCyan);
+    const [peer] = stepPromptRows(pc, { steps: [{ step: { ...held, user: 'ava' }, number: 1 }], help: false }, { maxWidth: 120 });
+    expect(peer).toContain(pc.cyan('ava · '));
   });
 });

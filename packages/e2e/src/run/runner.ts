@@ -915,8 +915,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
           // Pass 1, what any test filter judges. The run's own flag still
           // decides an empty one, so a mistyped --tag fails before any
           // filter calls a model.
-          const firstPass = select(collection, config, inputs.filters, flags);
-          return { collection, filters: inputs.filters, selection: firstPass };
+          return { collection, filters: inputs.filters, selection: select(collection, config, inputs.filters, flags) };
         }),
       );
     } catch (cause) {

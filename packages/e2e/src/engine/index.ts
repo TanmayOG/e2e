@@ -422,21 +422,24 @@ export interface EnginePrepareInfo {
   /** The app the target declares, as `init` receives it: what a device installs or warms up here. */
   readonly app: EngineAppInfo;
   /**
-   * The slots the run will use on this target, `0` to `slots - 1`: one per
-   * worker it starts for the target (the run's worker cap, the engine's
+   * The slots the run may use on this target, `0` to `slots - 1`: one per
+   * worker it plans for the target (the run's worker cap, the engine's
    * declared `workers`, and the work units selected for the target, whichever
-   * is smallest), then one per peer (`peerSlots`); `0` when nothing runs on it
+   * is smallest), and one per peer (`peerSlots`); `0` when nothing runs on it
    * while another target has work. A run with nothing to run prepares no
    * target. Provision for exactly these slots (boot that many devices of a
-   * pool); `init` then finds them ready.
+   * pool); `init` then finds them ready. Treat the slots alike: which one a
+   * worker or a peer gets is settled after `prepare`, once the run fits its
+   * workers to what the engine serves.
    */
   readonly slots: number;
   /**
-   * How many of `slots` are for peers: a test's other users (its `peers`
-   * option), each on an engine instance of its own inside the worker that
-   * runs the test, on a slot no worker of this target holds. Absent in a run
-   * that puts no peer on the target. An engine that cannot serve a peer
-   * refuses here, before it acquires anything.
+   * How many of `slots` the run sets aside for peers: a test's other users
+   * (its `peers` option), each on an engine instance of its own inside the
+   * worker that runs the test, on a slot no worker of this target holds. A
+   * count, not a range: see `slots`. Absent in a run that puts no peer on
+   * the target. An engine that cannot serve a peer refuses here, before it
+   * acquires anything.
    */
   readonly peerSlots?: number;
   /**
@@ -535,11 +538,11 @@ export interface EngineInitInfo {
    * This worker's 0-based slot among the target's workers: the lowest slot
    * free when the worker was spawned, so a replacement worker takes over the
    * slot of the one that exited. An engine with several devices hands each
-   * slot its own. A target's own workers take the first slots, as many as
+   * slot its own. A target's own workers take the lowest slots, as many as
    * the run starts for it; an instance that runs a peer of a worker's test
-   * gets one of the slots `prepare` was asked for beyond them
-   * (`EnginePrepareInfo.peerSlots`), which no worker and no other peer holds.
-   * So a slot can reach past `config.workers`, up to
+   * gets a slot after them that no worker and no other peer holds. When the
+   * run starts fewer workers than `prepare` was told, the peers' slots start
+   * lower too. So a slot can reach past `config.workers`, up to
    * `EnginePrepareInfo.slots - 1`. A peer's instance lives in the same worker
    * process as the test's own: state an engine package keeps at module level
    * is shared between them.

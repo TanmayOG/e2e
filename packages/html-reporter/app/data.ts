@@ -29,8 +29,20 @@ export interface AttemptView {
   readonly failure: Attempt['failure'];
   readonly artifacts: readonly Artifact[];
   readonly environment: Attempt['environment'];
-  /** What each peer's app ran on and showed at the failure, by peer name; absent when the test has no peers. */
+  /** What each peer's app ran on and showed at the failure, by peer name: the peers whose app opened, so absent when none did. */
   readonly peers?: Attempt['peers'];
+}
+
+/** One user's evidence at the failure: the test's own (`user` undefined), or a peer's. */
+export interface UserFailure {
+  readonly user: string | undefined;
+  readonly failure: NonNullable<Attempt['failure']>;
+}
+
+/** What each user's screen showed at the failure: the test's own first, then each peer's under its name; a user with none is left out. */
+export function failuresByUser(attempt: Pick<AttemptView, 'failure' | 'peers'>): UserFailure[] {
+  const users = [{ user: undefined, failure: attempt.failure }, ...Object.entries(attempt.peers ?? {}).map(([user, peer]) => ({ user, failure: peer.failure }))];
+  return users.flatMap(({ user, failure }) => (failure === undefined ? [] : [{ user, failure }]));
 }
 
 /** The page's whole model, built once from the payload. */

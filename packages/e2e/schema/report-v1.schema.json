@@ -425,7 +425,7 @@
         "cleanup": { "enum": ["complete", "failed", "forced"] },
         "environment": { "$ref": "#/$defs/environment" },
         "peers": {
-          "description": "The target each peer's app ran on, what the engine said it ran on, and what the runner saw on it when the failure landed, by peer name. Absent when the test has no peers.",
+          "description": "The target each peer's app ran on, what the engine said it ran on, and what the runner saw on it when the failure landed, by peer name: the peers whose app opened, so absent when none did.",
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/user" },
           "additionalProperties": {

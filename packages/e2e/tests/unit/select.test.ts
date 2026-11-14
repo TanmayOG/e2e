@@ -1074,6 +1074,17 @@ describe('peers', () => {
     expect(setupOn(local, 'admin').disposition).not.toBe('run');
   });
 
+  it("keeps an engine's own fixture named peers for tests without peers, and refuses a test with peers on its target", async () => {
+    const own = defineEngine({ name: 'toy', version: '1.0.0', spiVersion: 1, fixtures: { peers: () => ({ mine: true }) } });
+    const cfg = config({ targets: [{ name: 'web', platform: 'web', engine: own }] });
+    const alone = await collection(() => test('alone', noop));
+    expect(select(alone, cfg).pairs.map((pair) => pair.disposition)).toEqual(['run']);
+    const pair = await collection(() => test('pays', { peers: { ava: {} } }, noop));
+    expect(() => select(pair, cfg)).toThrow(
+      'test "pays" in tests/a.e2e.ts declares peers, but target "web" runs on engine toy, which contributes a fixture named "peers"; the peers option needs that name',
+    );
+  });
+
   it('refuses a peer session on a target whose engine cannot restore one, before any test runs', async () => {
     const col = await collection(() => {
       test.setup('sign in', { sessions: ['ava'] }, noop);

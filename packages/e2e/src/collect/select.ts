@@ -401,7 +401,12 @@ export function select(
   collection: Collection,
   config: ResolvedConfig,
   filters: SelectionFilters = {},
-  flags: { passWithNoTests?: boolean; noTestsHint?: string } = {},
+  flags: {
+    passWithNoTests?: boolean;
+    noTestsHint?: string;
+    /** The caller refuses every test with peers itself (an MCP session drives one app), so selection leaves their targets and sessions unchecked. */
+    peersRefused?: boolean;
+  } = {},
 ): Selection {
   const tagMode = filters.tagMode ?? 'any';
   const targets = selectTargets(config.targets, filters.targetIds);
@@ -449,7 +454,7 @@ export function select(
   // shard machines agree on the cut whatever a filter answers.
   const withExclusions =
     filters.excluded === undefined ? withShard : applySerialClosure(applyExclusions(withShard, filters.excluded));
-  const withSessions = applySessionSelection(withExclusions, sessionProducers, collection.uncollected, targets);
+  const withSessions = applySessionSelection(withExclusions, sessionProducers, collection.uncollected, targets, flags.peersRefused === true);
 
   const runnableOrdinary = withSessions.filter(
     (pair) => pair.disposition === 'run' && pair.test.kind === 'test',
@@ -906,6 +911,7 @@ function applySessionSelection(
   sessionProducers: ReadonlyMap<string, CollectedTest>,
   uncollected: readonly UncollectedFile[],
   targets: readonly ResolvedTarget[],
+  peersRefused: boolean,
 ): TestTargetPair[] {
   /** Each needed setup, by target and producer, with the sessions a selected test consumes from it. */
   const neededSetups = new Map<string, Set<string>>();
@@ -936,6 +942,15 @@ function applySessionSelection(
   for (const pair of pairs) {
     if (pair.disposition !== 'run') continue;
     if (pair.options.session !== undefined) need(pair, pair.options.session, pair.target.name, undefined);
+    // A caller that refuses tests with peers says why itself: a target or setup they need is not its concern.
+    if (peersRefused) continue;
+    // An engine may contribute its own fixture named `peers`, as it could before e2e had them; it would hide the test's.
+    const engine = pair.target.engine;
+    if (pair.options.peers.length > 0 && engine?.capabilities.has('peers') === true) {
+      throw new CollectionError(
+        `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file} declares peers, but target "${pair.target.name}" runs on engine ${engine.name}, which contributes a fixture named "peers"; the peers option needs that name`,
+      );
+    }
     for (const peer of pair.options.peers) {
       const targetName = peerTarget(peer, pair);
       const named = `test "${pair.test.titlePath.join(' > ')}" in ${pair.test.file}`;

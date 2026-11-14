@@ -480,7 +480,7 @@ test('Ava sees the payment', { session: 'member', peers: { ava: { session: 'ava'
 });
 ```
 
-| Field | Type | Default |
+| Option | Type | Default |
 | --- | --- | --- |
 | `target` | `string` | the test's target |
 | `session` | `string` | - |
@@ -495,15 +495,15 @@ test('Ava sees the payment', { session: 'member', peers: { ava: { session: 'ava'
 - `agentContext` reaches the peer's agent steps only. The test's own
   `agentContext` stays with the test's user.
 - Names match `/^[A-Za-z0-9_.-]{1,128}$/`, are not `.` or `..`, and differ
-  in more than case: each peer's files go in a folder named after it.
+  in more than case, since each peer's files go in a folder named after it.
 - Innermost wins, as a whole.
 
 See [Two users in one test](/authentication#two-users-in-one-test) for what
-each peer gets and the limits.
+each peer gets.
 
 | Throws | When |
 | --- | --- |
-| `COLLECTION_ERROR` | A name or field that breaks the rules above, an unknown `target` or `agent`, a `target` the run does not select, a `session` no setup test saves, a `session` on a target that cannot restore one, `peers` on or inside a serial group or on a setup test, or a peer target whose engine runs in an engine server. |
+| `COLLECTION_ERROR` | A name or field that breaks the rules above, an unknown `target` or `agent`, a `target` the run does not select, a `session` no setup test saves, a `session` on a target that cannot restore one, `peers` on, inside, or around a serial group or on a setup test, a peer target whose engine runs in an engine server, or a target whose engine contributes its own `peers` fixture. |
 | `SESSION_TEST_UNSUPPORTED` | `e2e mcp`'s `open_session` names the test: a session drives one app. |
 | `UNSUPPORTED_CAPABILITY` | Before any test, the peer's target leases its browsers or devices from a provider, or attaches to a browser over CDP, or the run has no config file to load the peer's engine from: a config value or tests registered in memory. |
 | `INVALID_CONFIG` | At launch, the peer's engine is the same object as another user's in the worker, as an engine made inside a package is. In the body, `peers.<name>` names a peer the test does not declare. |
@@ -693,7 +693,8 @@ Per attempt:
 
 | Mistake | Fails |
 | --- | --- |
-| A value that is not a plain object of functions, an empty name, a core name (`agent`, `app`, `screen`, `platform`, `session`, `peers`), or a name an earlier `extend` in the chain defined | At import, `COLLECTION_ERROR` naming the fixture |
+| A value that is not a plain object of functions, an empty name, a core name (`agent`, `app`, `screen`, `platform`, `session`), or a name an earlier `extend` in the chain defined | At import, `COLLECTION_ERROR` naming the fixture |
+| A fixture named `peers` in the chain of a test that declares [`peers`](#peers), on the test or a `describe` around it | At import, `COLLECTION_ERROR` naming the test. Without `peers` on the test, your fixture works as before |
 | A name the target's engine contributes (`browser` on a Playwright target) | The attempt, in `beforeEach`, `TEST_SETUP_FAILED` |
 | A definition that returns without calling `use` | The attempt, in `beforeEach`, `TEST_SETUP_FAILED` |
 | A definition that calls `use` twice | The attempt, at teardown, `TEST_SETUP_FAILED` |
@@ -717,8 +718,13 @@ hook finishes.
 export interface TestAPI<Fixtures = TestFixtures> {
   /** Registers one test synchronously during module evaluation. */
   (title: string, fn: TestFn<Fixtures>): TestCase;
-  /** Registers one configured test synchronously during module evaluation. */
-  (title: string, options: TestOptions, fn: TestFn<Fixtures>): TestCase;
+  /**
+   * Registers one configured test synchronously during module evaluation.
+   * The names the test's own `peers` option declares type its `peers`
+   * fixture, so a peer it never declared is a type error; peers set on a
+   * `describe` are typed by any name.
+   */
+  <Peers extends Readonly<Record<string, PeerOptions>> = never>(title: string, options: TestOptions & { peers?: Peers }, fn: TestFn<Fixtures>): TestCase;
   /** Registers one skipped test. */
   skip(title: string, fn: TestFn<Fixtures>): TestCase;
   /**
@@ -771,6 +777,9 @@ export interface TestAPI<Fixtures = TestFixtures> {
    *       await workspace.cleanup();
    *     },
    *   });
+   *
+   * A fixture named `peers` replaces the core one in its tests' types; those
+   * tests can't declare the `peers` option.
    */
   extend<Extra>(fixtures: FixtureDefinitions<Fixtures, Extra>): TestAPI<Fixtures & Extra>;
   /** Declares a group synchronously. */

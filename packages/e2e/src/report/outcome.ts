@@ -33,7 +33,7 @@ export interface AttemptView {
   readonly secondaryErrors: readonly ReportError[];
   /** What the engine said the attempt ran on; for a serial member, the group attempt's. */
   readonly environment?: Readonly<Record<string, string>> | undefined;
-  /** What each peer's app ran on and showed at the failure, by peer name; absent when the test has no peers. */
+  /** What each peer's app ran on and showed at the failure, by peer name: the peers whose app opened, so absent when none did. */
   readonly peers?: Readonly<Record<string, PeerAttemptFacts>> | undefined;
   /** Why the body skipped itself; on a failed attempt, a skip the failure outranked. */
   readonly skip: SkipInfo | undefined;

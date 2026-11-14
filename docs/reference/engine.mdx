@@ -97,7 +97,7 @@ rules:
 | `tapModifiers` | Not a boolean, or `true` without `perform`. |
 | `keyboard`, `state`, `artifacts`, `session` | An unknown key or a non-function member. `keyboard` without `type` and `press`; `state` without both `capture` and `restore`; `artifacts` without `screenshot`; `startVideo` without `stopVideo`, or the reverse. |
 | `secrets` | Not an array of `secrets.get()` handles. |
-| `fixtures` | Not an object, a fixture that is not a factory function, or a fixture name that is not a lower-camel identifier or shadows `agent`, `app`, `screen`, `platform`, or `session`. |
+| `fixtures` | Not an object, a fixture that is not a factory function, or a fixture name that is not a lower-camel identifier or shadows `agent`, `app`, `screen`, `platform`, or `session`. A fixture named `peers` works, but a test that declares [`peers`](/reference/test#peers) on its target fails selection with `COLLECTION_ERROR`. |
 
 <Note>
 `artifacts.startTrace` and `artifacts.stopTrace` were removed from the
@@ -549,14 +549,18 @@ async prepare(info) {
 ```
 
 A test's [peers](/reference/test#peers) run inside the worker that runs the
-test, each on a slot of its own on the peer's target. So `info.slots` counts
-the target's own workers first, then `info.peerSlots` more for peers, and the
-run hands each peer's engine one of those as its `workerSlot`, with the `env`
-this hook returned. An engine that serves fewer slots reports `workers`: the
-run then starts fewer workers, the target's own first, and stops before any
-test when it can't serve one worker of each target and their peers. An
-engine that can't give a peer a surface of its own throws here, before it
-acquires anything, as `@e2e-dev/web` does for a browser provider.
+test, each on a slot of its own on the peer's target. `info.slots` counts the
+target's own workers, and `info.peerSlots` more for peers. The run hands each
+worker and each peer's engine one of those slots as its `workerSlot`, with the
+`env` this hook returned. Treat the slots alike.
+
+An engine that serves fewer slots reports `workers`. The run then starts
+fewer workers, the target's own first, and gives the peers the slots right
+after them. When it can't serve one worker of each target and their peers, it
+stops before any test. An engine that can't give a peer a surface of its own
+throws here, before it acquires anything, as `@e2e-dev/web` does for a
+browser provider.
+
 A peer's engine instance lives in the same worker process as the test's own,
 each from its own `init`, so state an engine package keeps at module level is
 shared between them.
@@ -607,21 +611,24 @@ export interface EnginePrepareInfo {
   /** The app the target declares, as `init` receives it: what a device installs or warms up here. */
   readonly app: EngineAppInfo;
   /**
-   * The slots the run will use on this target, `0` to `slots - 1`: one per
-   * worker it starts for the target (the run's worker cap, the engine's
+   * The slots the run may use on this target, `0` to `slots - 1`: one per
+   * worker it plans for the target (the run's worker cap, the engine's
    * declared `workers`, and the work units selected for the target, whichever
-   * is smallest), then one per peer (`peerSlots`); `0` when nothing runs on it
+   * is smallest), and one per peer (`peerSlots`); `0` when nothing runs on it
    * while another target has work. A run with nothing to run prepares no
    * target. Provision for exactly these slots (boot that many devices of a
-   * pool); `init` then finds them ready.
+   * pool); `init` then finds them ready. Treat the slots alike: which one a
+   * worker or a peer gets is settled after `prepare`, once the run fits its
+   * workers to what the engine serves.
    */
   readonly slots: number;
   /**
-   * How many of `slots` are for peers: a test's other users (its `peers`
-   * option), each on an engine instance of its own inside the worker that
-   * runs the test, on a slot no worker of this target holds. Absent in a run
-   * that puts no peer on the target. An engine that cannot serve a peer
-   * refuses here, before it acquires anything.
+   * How many of `slots` the run sets aside for peers: a test's other users
+   * (its `peers` option), each on an engine instance of its own inside the
+   * worker that runs the test, on a slot no worker of this target holds. A
+   * count, not a range: see `slots`. Absent in a run that puts no peer on
+   * the target. An engine that cannot serve a peer refuses here, before it
+   * acquires anything.
    */
   readonly peerSlots?: number;
   /**
@@ -774,11 +781,11 @@ export interface EngineInitInfo {
    * This worker's 0-based slot among the target's workers: the lowest slot
    * free when the worker was spawned, so a replacement worker takes over the
    * slot of the one that exited. An engine with several devices hands each
-   * slot its own. A target's own workers take the first slots, as many as
+   * slot its own. A target's own workers take the lowest slots, as many as
    * the run starts for it; an instance that runs a peer of a worker's test
-   * gets one of the slots `prepare` was asked for beyond them
-   * (`EnginePrepareInfo.peerSlots`), which no worker and no other peer holds.
-   * So a slot can reach past `config.workers`, up to
+   * gets a slot after them that no worker and no other peer holds. When the
+   * run starts fewer workers than `prepare` was told, the peers' slots start
+   * lower too. So a slot can reach past `config.workers`, up to
    * `EnginePrepareInfo.slots - 1`. A peer's instance lives in the same worker
    * process as the test's own: state an engine package keeps at module level
    * is shared between them.

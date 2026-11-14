@@ -1,4 +1,4 @@
-import { formatDuration, testTitle, type Artifact, type AttemptView, type ReportError, type ReportModel, type Result, type Step } from './data.ts';
+import { failuresByUser, formatDuration, testTitle, type Artifact, type AttemptView, type ReportError, type ReportModel, type Result, type Step } from './data.ts';
 
 /** Agent turns quoted per failed step; the trace page has every one. */
 const MAX_TURNS = 3;
@@ -83,12 +83,7 @@ function stepLines(step: Step, index: number, attempt: AttemptView): string[] {
 
 /** What the runner saw on each user's screen at the failure: the test's own, then each peer's under its name. */
 function failureLines(attempt: AttemptView): string[] {
-  const users = [
-    { user: undefined, failure: attempt.failure },
-    ...Object.entries(attempt.peers ?? {}).map(([user, peer]) => ({ user, failure: peer.failure })),
-  ];
-  return users.flatMap(({ user, failure }) => {
-    if (failure === undefined) return [];
+  return failuresByUser(attempt).flatMap(({ user, failure }) => {
     const whose = user === undefined ? '' : ` of ${user}`;
     return [
       ...(failure.url === undefined ? [] : [`- Screen${whose}: ${failure.url}`]),
