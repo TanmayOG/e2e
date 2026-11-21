@@ -35,7 +35,8 @@ export interface ProjectedNode {
    * keyboard draws over it. A node agent-device marks covered outside the
    * keyboard reads as hidden too, but is not platform-hidden: it is still on
    * screen, so a role query still finds it, for an action on it to get
-   * agent-device's refusal, and a drag start still steers clear of it.
+   * agent-device's refusal, and a keyboard drag start still steers clear of
+   * it when it is a leaf no larger than half the screen.
    */
   readonly platformHidden: boolean;
 }
@@ -660,7 +661,7 @@ export function projectSnapshot(
     projected.platformHidden = source.visibleToUser === false || keyboardHidden;
     // Outside the keyboard, a node agent-device marks covered reads as hidden,
     // so `toBeVisible` waits and `scrollUntilVisible` scrolls until it is clear
-    // (tester-army/e2e#1324). Under it, or while it may be up unplaced, the
+    // (#1324). Under it, or while it may be up unplaced, the
     // keyboard's rules decide: agent-device counts the Android keyboard as a cover.
     const coverHides =
       source.interactionBlocked === 'covered' &&

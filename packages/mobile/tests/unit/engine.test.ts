@@ -2045,6 +2045,25 @@ describe('device fixture', () => {
       expect((await h.engine.locate!(byText('Suggestion'), operation()))[0]?.states).toBeUndefined();
     });
 
+    it('still drags in a full-screen scroll view agent-device marks covered when the screen has no other', async () => {
+      const h = harness();
+      await openAttempt(h);
+      await observed(h, 'Back');
+      const device = fixture(h);
+      h.fake.respond('command.keyboard', NO_DISMISS_KEY);
+      const feed = [
+        { ref: '@e1', index: 0, depth: 0, type: 'application', label: 'Feed', rect: { x: 0, y: 0, width: 390, height: 844 } },
+        { ref: '@e2', index: 1, parentIndex: 0, depth: 1, type: 'scroll-view', interactionBlocked: 'covered', rect: { x: 0, y: 0, width: 390, height: 844 } },
+        { ref: '@e3', index: 2, parentIndex: 1, depth: 2, type: 'text-field', label: 'Search', rect: { x: 20, y: 150, width: 350, height: 44 } },
+      ];
+      captures(h, [
+        { ...SETTINGS_SNAPSHOT, nodes: feed, keyboard: { kind: 'visible', frame: KEYBOARD_FRAME } },
+        { ...SETTINGS_SNAPSHOT, nodes: feed, keyboard: { kind: 'absent' } },
+      ]);
+      await device.dismissKeyboard();
+      expect((h.fake.lastArgs('interactions.swipe') as { from: unknown }).from).toEqual({ x: 195, y: 422 });
+    });
+
     it('drags from the point nearest the centre that no control covers, and stops once the keyboard is gone', async () => {
       const h = harness();
       await openAttempt(h);
@@ -3674,6 +3693,24 @@ describe('input freshness', () => {
     expect(h.fake.lastArgs('capture.snapshot')).toEqual({ interactiveOnly: false });
   });
 
+  it('fills a field agent-device marked covered after it was observed, leaving the cover to agent-device (#1324)', async () => {
+    const h = harness({ transition: 0 });
+    await openAttempt(h);
+    h.fake.respond('capture.snapshot', () => form());
+    const old = await observed(h, 'Account');
+    // A cover in between is agent-device's to refuse, so the fill goes ahead without a re-observation.
+    h.fake.respond('capture.snapshot', () => form(237, { interactionBlocked: 'covered' }));
+    await h.engine.perform!(old.ref, { kind: 'fill', value: 'example', sensitive: true }, operation());
+    expect(h.fake.methods().filter((method) => method === 'interactions.fill')).toHaveLength(1);
+    // A field the platform already hid when it was observed has not changed, so it goes ahead as on main.
+    const still = harness({ transition: 0 });
+    await openAttempt(still);
+    still.fake.respond('capture.snapshot', () => form(237, { visibleToUser: false }));
+    const hidden = (await still.engine.locate!({ kind: 'query', query: { kind: 'testId', value: { kind: 'string', value: 'account', exact: true } } }, operation()))[0]!;
+    await still.engine.perform!(hidden.ref, { kind: 'fill', value: 'example', sensitive: true }, operation());
+    expect(still.fake.methods().filter((method) => method === 'interactions.fill')).toHaveLength(1);
+  });
+
   it('does not silently accept changed security facts during a transition', async () => {
     const h = harness();
     await openAttempt(h);
@@ -4334,7 +4371,7 @@ describe('deterministic actions', () => {
   });
 });
 
-describe('nodes agent-device refuses as covered (tester-army/e2e#1324)', () => {
+describe('nodes agent-device refuses as covered (#1324)', () => {
   const NEXT = { kind: 'button', label: 'Next', rect: { x: 195, y: 360, width: 195, height: 112 } };
 
   /** agent-device's hint for a target the Next button covers, as `coveredInteractionDetails` words it. */

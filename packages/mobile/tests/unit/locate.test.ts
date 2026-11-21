@@ -220,7 +220,7 @@ describe('Android resource ids without their package', () => {
   });
 });
 
-describe('covered nodes in locator queries (tester-army/e2e#1324)', () => {
+describe('covered nodes in locator queries (#1324)', () => {
   const NODES: RawNode[] = [
     { index: 0, depth: 0, type: 'Application', label: 'Form', rect: { x: 0, y: 0, width: 390, height: 844 } },
     {

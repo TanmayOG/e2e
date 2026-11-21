@@ -18,7 +18,7 @@ const BRAND_UNDER_FOOTER = 16;
 
 /**
  * A product form whose Back/Next footer rises with the keyboard and lands on
- * the next field (tester-army/e2e#1324). In an app that happens on some
+ * the next field (#1324). In an app that happens on some
  * screen and keyboard sizes only; here a spacer sized from the form's
  * measured height pins the Brand field under the footer on any screen, with
  * the keyboard up or down, while Product name stays just above it. The form
