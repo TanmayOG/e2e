@@ -53,6 +53,7 @@ import {
   isWithin,
   keyboardElementsTop,
   keyboardBand,
+  keyboardUnplaced,
   mayTakeText,
   projectSnapshot,
   ROOT_ID,
@@ -1187,6 +1188,7 @@ export class AgentDeviceSurface {
    * replaces the known one.
    */
   private project(raw: RawSnapshot): ProjectedScreen {
+    const keyboard = keyboardBand(raw.nodes ?? [], raw.keyboard, raw.viewport);
     const projected = {
       ...projectSnapshot(raw.nodes ?? [], {
         mintId: () => {
@@ -1195,7 +1197,8 @@ export class AgentDeviceSurface {
         },
         viewport: raw.viewport,
         refsGeneration: raw.refsGeneration,
-        keyboard: keyboardBand(raw.nodes ?? [], raw.keyboard, raw.viewport),
+        keyboard,
+        keyboardUnplaced: keyboardUnplaced(raw.keyboard, keyboard, this.options.platform),
       }),
       keyboardVisible: keyboardShowing(raw),
       originUnknown: raw.warnings?.includes(ORIGIN_WARNING) === true,
