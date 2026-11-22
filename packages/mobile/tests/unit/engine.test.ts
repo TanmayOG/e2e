@@ -2107,6 +2107,29 @@ describe('device fixture', () => {
       expect((h.fake.lastArgs('interactions.swipe') as { from: unknown }).from).toEqual({ x: 195, y: 422 });
     });
 
+    it('keeps the drag off a covered leaf beside a keyboard narrower than the screen', async () => {
+      // A keyboard frame narrower than the screen, on the right: the text's centre is below the keyboard's top but beside it,
+      // so agent-device's mark is a real cover, in the observation and in the drag alike. A role query
+      // still finds the covered text; it would not find text the keyboard hides.
+      const h = harness();
+      await openAttempt(h);
+      await observed(h, 'Back');
+      const device = fixture(h);
+      h.fake.respond('command.keyboard', NO_DISMISS_KEY);
+      const nodes = [
+        { ref: '@e1', index: 0, depth: 0, type: 'application', label: 'Notes', rect: { x: 0, y: 0, width: 390, height: 844 } },
+        { ref: '@e2', index: 1, parentIndex: 0, depth: 1, type: 'static-text', label: 'Draft saved', interactionBlocked: 'covered', rect: { x: 145, y: 372, width: 100, height: 100 } },
+      ];
+      const floating = { ...SETTINGS_SNAPSHOT, nodes, keyboard: { kind: 'visible', frame: { x: 245, y: 400, width: 145, height: 444 } } };
+      const draft = { kind: 'query', query: { kind: 'role', value: { kind: 'string', value: 'text', exact: true }, name: { kind: 'string', value: 'Draft saved', exact: true } } } as const;
+      h.fake.respond('capture.snapshot', () => floating);
+      expect((await h.engine.locate!(draft, operation()))[0]?.states).toEqual({ hidden: true });
+      captures(h, [floating, { ...SETTINGS_SNAPSHOT, nodes, keyboard: { kind: 'absent' } }]);
+      await device.dismissKeyboard();
+      // The nearest point above the keyboard clear of the text, 8 points around it included.
+      expect((h.fake.lastArgs('interactions.swipe') as { from: unknown }).from).toEqual({ x: 195, y: 363.5 });
+    });
+
     it('drags from the point nearest the centre that no control covers, and stops once the keyboard is gone', async () => {
       const h = harness();
       await openAttempt(h);
