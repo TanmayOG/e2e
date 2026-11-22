@@ -985,7 +985,10 @@ await device.alert('accept');
  * first and vertical second, stopping as soon as the keyboard is gone. Each
  * drag starts at the point nearest the centre of the screen that no control
  * in the captured accessibility tree covers, inside a scroll view when the
- * screen has one, to avoid pressing a button or toggling a checkbox. A
+ * screen has one, to avoid pressing a button or toggling a checkbox. It
+ * also keeps off an element agent-device marks covered (one with no
+ * children, no larger than half the screen), where the touch would land on
+ * the cover, and prefers a scroll view that is not covered. A
  * control the tree leaves out, such as pressable text, can still be hit. The
  * simulator's "Speed up your typing" tip goes through its Continue button
  * first. A screen with no clear point above the keyboard, a keyboard reported
@@ -1233,9 +1236,8 @@ Android keyboard.
 
 - The keyboard's area is the frame agent-device measures. When a capture has
   no frame, the area runs from the top of the keyboard in the tree to the
-  bottom of the screen. An Android tree has no `Keyboard` or `Key` elements,
-  since the keyboard's nodes are plain views, so a keyboard agent-device cannot
-  measure there leaves no area, and the covered mark then hides nothing.
+  bottom of the screen. If agent-device cannot measure the Android keyboard,
+  the covered mark hides nothing.
 - A container whose centre is under the keyboard stays visible while one of
   its children is above it, even one agent-device marks covered.
 - A node under another view, such as a footer the keyboard lifts, is hidden

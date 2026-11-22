@@ -32,13 +32,17 @@ export interface ProjectedNode {
   readonly parent: ProjectedNode | undefined;
   /**
    * Whether the platform hides the node: it reports it not shown, or the soft
-   * keyboard draws over it. A node agent-device marks covered outside the
-   * keyboard reads as hidden too, but is not platform-hidden: it is still on
-   * screen, so a role query still finds it, for an action on it to get
-   * agent-device's refusal, and a keyboard drag start still steers clear of
-   * it when it is a leaf no larger than half the screen.
+   * keyboard draws over it. A covered node (`covered`) reads as hidden too,
+   * but is not platform-hidden: it is still on screen, so a role query still
+   * finds it, for an action on it to get agent-device's refusal.
    */
   readonly platformHidden: boolean;
+  /**
+   * Whether agent-device's covered mark hides the node: agent-device marks it
+   * covered, outside the keyboard, and no Android keyboard may be up unplaced.
+   * See `projectSnapshot`.
+   */
+  readonly covered: boolean;
 }
 
 export interface ProjectedSnapshot {
@@ -636,7 +640,7 @@ export function projectSnapshot(
     const label = folded === undefined ? nonEmpty(source.label) : folded.label;
     const name = nonEmpty(source.contentDescription) ?? label;
     const placeholder = folded?.placeholder ?? nonEmpty(source.placeholder);
-    const projected: { node: SemanticNode | undefined; platformHidden: boolean } = { node: undefined, platformHidden: false };
+    const projected: { node: SemanticNode | undefined; platformHidden: boolean; covered: boolean } = { node: undefined, platformHidden: false, covered: false };
     const entry: ProjectedNode = {
       id,
       ref: stripRef(source.ref),
@@ -648,6 +652,9 @@ export function projectSnapshot(
       },
       get platformHidden(): boolean {
         return projected.platformHidden;
+      },
+      get covered(): boolean {
+        return projected.covered;
       },
     };
     index.push(entry);
@@ -663,7 +670,7 @@ export function projectSnapshot(
     // so `toBeVisible` waits and `scrollUntilVisible` scrolls until it is clear
     // (#1324). Under it, or while it may be up unplaced, the
     // keyboard's rules decide: agent-device counts the Android keyboard as a cover.
-    const coverHides =
+    projected.covered =
       source.interactionBlocked === 'covered' &&
       options.keyboardUnplaced !== true &&
       !(source.rect !== undefined && inKeyboard(centerOfRect(source.rect), options.keyboard));
@@ -671,7 +678,7 @@ export function projectSnapshot(
       ...(source.enabled === false ? { disabled: true } : {}),
       ...(source.selected === true ? { selected: true } : {}),
       ...(source.focused === true ? { focused: true } : {}),
-      ...(projected.platformHidden || coverHides ? { hidden: true } : {}),
+      ...(projected.platformHidden || projected.covered ? { hidden: true } : {}),
       ...(secure ? { secure: true } : {}),
       ...(checked === undefined ? {} : { checked }),
       ...(spelled?.states.expanded === undefined ? {} : { expanded: spelled.states.expanded }),

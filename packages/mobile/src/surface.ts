@@ -1194,7 +1194,6 @@ export class AgentDeviceSurface {
    * replaces the known one.
    */
   private project(raw: RawSnapshot): ProjectedScreen {
-    const keyboard = keyboardBand(raw.nodes ?? [], raw.keyboard, raw.viewport);
     const projected = {
       ...projectSnapshot(raw.nodes ?? [], {
         mintId: () => {
@@ -1203,8 +1202,7 @@ export class AgentDeviceSurface {
         },
         viewport: raw.viewport,
         refsGeneration: raw.refsGeneration,
-        keyboard,
-        keyboardUnplaced: keyboardUnplaced(raw.keyboard, keyboard, this.options.platform),
+        ...this.keyboardPlacement(raw),
       }),
       keyboardVisible: keyboardShowing(raw),
       originUnknown: raw.warnings?.includes(ORIGIN_WARNING) === true,
@@ -1213,6 +1211,15 @@ export class AgentDeviceSurface {
     const read = projected.viewport;
     if (read !== undefined && (this.knownViewport === undefined || sameScreen(read, this.knownViewport))) this.knownViewport = read;
     return projected;
+  }
+
+  /**
+   * Where a capture's soft keyboard is, as `projectSnapshot` reads it: the
+   * band it covers, and whether an Android keyboard may be up with none.
+   */
+  private keyboardPlacement(raw: RawSnapshot): { readonly keyboard: Rect | undefined; readonly keyboardUnplaced: boolean } {
+    const keyboard = keyboardBand(raw.nodes ?? [], raw.keyboard, raw.viewport);
+    return { keyboard, keyboardUnplaced: keyboardUnplaced(raw.keyboard, keyboard, this.options.platform) };
   }
 
   /**
@@ -1824,7 +1831,8 @@ export class AgentDeviceSurface {
     if (reading.shown !== true) return;
     for (const axis of ['horizontal', 'vertical'] as const) {
       const { raw } = reading;
-      const projected = projectSnapshot(raw.nodes ?? [], { mintId: () => 'keyboard', viewport: raw.viewport });
+      // The keyboard is placed as in an observation, so a covered mark counts where it does there.
+      const projected = projectSnapshot(raw.nodes ?? [], { mintId: () => 'keyboard', viewport: raw.viewport, ...this.keyboardPlacement(raw) });
       const viewport = await this.viewportFor(projected, signal, input);
       const top = keyboardTop(raw, viewport);
       if (top === undefined) {

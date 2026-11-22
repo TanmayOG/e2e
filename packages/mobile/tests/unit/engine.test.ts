@@ -2064,6 +2064,49 @@ describe('device fixture', () => {
       expect((h.fake.lastArgs('interactions.swipe') as { from: unknown }).from).toEqual({ x: 195, y: 422 });
     });
 
+    it('keeps the drag off the top of a button the keyboard half covers', async () => {
+      // The button's centre is under the keyboard, so it reads hidden, but its top half shows above the keyboard.
+      const h = harness();
+      await openAttempt(h);
+      await observed(h, 'Back');
+      const device = fixture(h);
+      h.fake.respond('command.keyboard', NO_DISMISS_KEY);
+      const nodes = [
+        { ref: '@e1', index: 0, depth: 0, type: 'application', label: 'Order', rect: { x: 0, y: 0, width: 390, height: 844 } },
+        { ref: '@e2', index: 1, parentIndex: 0, depth: 1, type: 'scroll-view', rect: { x: 0, y: 500, width: 390, height: 80 } },
+        { ref: '@e3', index: 2, parentIndex: 0, depth: 1, type: 'button', label: 'Continue', rect: { x: 145, y: 500, width: 100, height: 170 } },
+      ];
+      captures(h, [
+        { ...SETTINGS_SNAPSHOT, nodes, keyboard: { kind: 'visible', frame: KEYBOARD_FRAME } },
+        { ...SETTINGS_SNAPSHOT, nodes, keyboard: { kind: 'absent' } },
+      ]);
+      await device.dismissKeyboard();
+      expect((h.fake.lastArgs('interactions.swipe') as { from: unknown }).from).toEqual({ x: 136.5, y: 500 });
+    });
+
+    it('does not count a covered mark under the keyboard when choosing where the drag starts', async () => {
+      // The results list's centre is under the keyboard, where the keyboard's rules decide, so the drag
+      // starts in it rather than beside the chip in the bar above.
+      const h = harness();
+      await openAttempt(h);
+      await observed(h, 'Back');
+      const device = fixture(h);
+      h.fake.respond('command.keyboard', NO_DISMISS_KEY);
+      const nodes = [
+        { ref: '@e1', index: 0, depth: 0, type: 'application', label: 'Search', rect: { x: 0, y: 0, width: 390, height: 844 } },
+        { ref: '@e2', index: 1, parentIndex: 0, depth: 1, type: 'scroll-view', identifier: 'chips', rect: { x: 0, y: 100, width: 390, height: 60 } },
+        { ref: '@e3', index: 2, parentIndex: 1, depth: 2, type: 'button', label: 'All', rect: { x: 0, y: 100, width: 195, height: 60 } },
+        { ref: '@e4', index: 3, parentIndex: 0, depth: 1, type: 'scroll-view', identifier: 'results', interactionBlocked: 'covered', rect: { x: 0, y: 330, width: 390, height: 514 } },
+        { ref: '@e5', index: 4, parentIndex: 3, depth: 2, type: 'static-text', label: 'Result', rect: { x: 16, y: 340, width: 200, height: 20 } },
+      ];
+      captures(h, [
+        { ...SETTINGS_SNAPSHOT, nodes, keyboard: { kind: 'visible', frame: KEYBOARD_FRAME } },
+        { ...SETTINGS_SNAPSHOT, nodes, keyboard: { kind: 'absent' } },
+      ]);
+      await device.dismissKeyboard();
+      expect((h.fake.lastArgs('interactions.swipe') as { from: unknown }).from).toEqual({ x: 195, y: 422 });
+    });
+
     it('drags from the point nearest the centre that no control covers, and stops once the keyboard is gone', async () => {
       const h = harness();
       await openAttempt(h);

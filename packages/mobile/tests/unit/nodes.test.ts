@@ -972,11 +972,28 @@ describe('nodes agent-device marks covered (#1324)', () => {
         { index: 3, parentIndex: 0, type: 'android.widget.ScrollView', identifier: 'results', interactionBlocked: 'covered', rect: list },
         { index: 4, parentIndex: 3, type: 'android.widget.TextView', label: 'Result', rect: { x: 24, y: 620, width: 600, height: 60 } },
       ],
-      { mintId: () => `n${++counter}`, viewport: screen },
+      { mintId: () => `n${++counter}`, viewport: screen, keyboard: { x: 0, y: 1500, width: 1080, height: 900 } },
     );
+    expect(projected.index.find((entry) => entry.node.testId === 'results')?.covered).toBe(false);
     const start = keyboardDragStart(projected, screen, 1500);
     expect(start).toBeDefined();
     expect(start!.y >= list.y && start!.y <= 1500).toBe(true);
+  });
+
+  it('counts a covered leaf beside a keyboard narrower than the screen when choosing where the drag starts', () => {
+    // A keyboard docked right, as one-handed: the text's centre is below the keyboard's top but beside it, so the mark is a real cover.
+    const saved = { x: 145, y: 372, width: 100, height: 100 };
+    let counter = 0;
+    const projected = projectSnapshot(
+      [
+        { index: 0, depth: 0, type: 'Application', label: 'Form', rect: { x: 0, y: 0, width: 390, height: 844 } },
+        { index: 1, parentIndex: 0, type: 'StaticText', label: 'Draft saved', interactionBlocked: 'covered', rect: saved },
+      ],
+      { mintId: () => `n${++counter}`, viewport: SCREEN, keyboard: { x: 245, y: 400, width: 145, height: 444 } },
+    );
+    expect(projected.index.find((entry) => entry.node.name === 'Draft saved')?.covered).toBe(true);
+    // The nearest point above the keyboard clear of the text, 8 points around it included.
+    expect(keyboardDragStart(projected, SCREEN, 400)).toEqual({ x: 195, y: 363.5 });
   });
 
   it('starts a keyboard-dismissing drag on a node the platform reports not shown', () => {
